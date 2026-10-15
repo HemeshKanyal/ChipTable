@@ -11,12 +11,12 @@ import { nextButtonSeat } from "@/lib/engine/button";
 import { orderFromButton, splitPot } from "@/lib/engine/split";
 import { winnerCandidates } from "@/lib/hand/wallet";
 import { VOTE_DURATION_MS, tallyBallots } from "@/lib/vote/tally";
-import type { HandDoc, PlayerDoc, RoomDoc, VoteDoc } from "@/lib/types";
+import type { HandDoc, PlayerDoc, RoomDoc, VoteDoc, WalletHandDoc } from "@/lib/types";
 import { handRef, handsCol, playerRef, roomRef, voteRef, votesCol } from "./paths";
 import { RoomError } from "./rooms";
 
 /** Seated (not sitting out) players, in seat order, read inside the transaction. */
-async function seatedPlayers(tx: Transaction, db: Firestore, roomId: string, room: RoomDoc) {
+export async function seatedPlayers(tx: Transaction, db: Firestore, roomId: string, room: RoomDoc) {
   const entries = Object.entries(room.seats)
     .map(([seat, uid]) => ({ seat: Number(seat), uid }))
     .sort((a, b) => a.seat - b.seat);
@@ -26,11 +26,11 @@ async function seatedPlayers(tx: Transaction, db: Firestore, roomId: string, roo
     .filter((p): p is PlayerDoc => !!p && p.status === "seated" && p.seatIndex !== null);
 }
 
-function newVote(handId: string, round: number, candidates: string[], voterUids: string[]) {
+export function newVote(handId: string, round: number, candidates: string[], voterUids: string[], potIndex = 0) {
   return {
     type: "winner",
     handId,
-    potIndex: 0,
+    potIndex,
     round,
     openedAt: serverTimestamp(),
     durationMs: VOTE_DURATION_MS,
@@ -97,7 +97,7 @@ export async function contribute(
       tx.get(handRef(db, roomId, handId)),
       tx.get(playerRef(db, roomId, uid)),
     ]);
-    const hand = handSnap.data() as HandDoc;
+    const hand = handSnap.data() as WalletHandDoc;
     const player = playerSnap.data() as PlayerDoc;
     if (hand.status !== "betting") throw new RoomError("hand-closed", "Betting has closed for this hand.");
     if (player.status !== "seated") throw new RoomError("denied", "Sit in to put chips in.");
@@ -119,7 +119,7 @@ export async function openWinnerVote(db: Firestore, roomId: string, handId: stri
   await runTransaction(db, async (tx) => {
     const [roomSnap, handSnap] = await Promise.all([tx.get(roomRef(db, roomId)), tx.get(handRef(db, roomId, handId))]);
     const room = roomSnap.data() as RoomDoc;
-    const hand = handSnap.data() as HandDoc;
+    const hand = handSnap.data() as WalletHandDoc;
     if (hand.status !== "betting") throw new RoomError("hand-closed", "This hand isn't taking bets any more.");
     const voters = (await seatedPlayers(tx, db, roomId, room)).map((p) => p.uid);
     tx.set(vote, newVote(handId, 1, winnerCandidates(hand.participants, hand.contributions), voters));
@@ -163,7 +163,7 @@ export async function acceptVote(
       tx.get(voteRef(db, roomId, voteId)),
     ]);
     const room = roomSnap.data() as RoomDoc;
-    const hand = handSnap.data() as HandDoc;
+    const hand = handSnap.data() as WalletHandDoc;
     const vote = voteSnap.data() as VoteDoc;
     if (hand.status !== "voting" || vote.status !== "open" || hand.voteId !== voteId) {
       throw new RoomError("hand-closed", "This vote has already been decided.");
@@ -200,15 +200,20 @@ export async function acceptVote(
   return payouts;
 }
 
-/** Host: call the hand off (misdeal) and give everyone back what they put in. */
+/**
+ * Host: call the hand off (misdeal) and give everyone back what they put in. Wallet chips left
+ * the stacks as they went in, so they're refunded; guided stacks never moved, so nothing to do.
+ */
 export async function cancelHand(db: Firestore, roomId: string, handId: string): Promise<void> {
   await runTransaction(db, async (tx) => {
     const hand = (await tx.get(handRef(db, roomId, handId))).data() as HandDoc;
-    if (hand.status !== "betting" && hand.status !== "voting") {
+    if (hand.status === "complete" || hand.status === "cancelled") {
       throw new RoomError("hand-closed", "This hand is already over.");
     }
-    const vote = hand.voteId ? ((await tx.get(voteRef(db, roomId, hand.voteId))).data() as VoteDoc) : null;
-    const refunds = Object.entries(hand.contributions).filter(([, amount]) => amount > 0);
+    const voteIds = (hand.mode === "wallet" ? [hand.voteId] : hand.voteIds).filter((id): id is string => !!id);
+    const votes = await Promise.all(voteIds.map(async (id) => (await tx.get(voteRef(db, roomId, id))).data() as VoteDoc));
+    const refunds =
+      hand.mode === "wallet" ? Object.entries(hand.contributions).filter(([, amount]) => amount > 0) : [];
     const snaps = await Promise.all(refunds.map(([uid]) => tx.get(playerRef(db, roomId, uid))));
 
     snaps.forEach((snap, i) => {
@@ -223,12 +228,14 @@ export async function cancelHand(db: Firestore, roomId: string, handId: string):
         payouts: hand.contributions,
         decidedBy: "cancelled",
         tally: {},
-        voteRounds: vote?.round ?? 0,
+        voteRounds: Math.max(0, ...votes.map((v) => v.round)),
       },
     });
-    if (hand.voteId && vote?.status === "open") {
-      tx.update(voteRef(db, roomId, hand.voteId), { status: "cancelled", closedAt: serverTimestamp() });
-    }
+    votes.forEach((vote, i) => {
+      if (vote.status === "open") {
+        tx.update(voteRef(db, roomId, voteIds[i]), { status: "cancelled", closedAt: serverTimestamp() });
+      }
+    });
     tx.update(roomRef(db, roomId), { currentHandId: null, lastHandId: handId, lastActiveAt: serverTimestamp() });
   });
 }

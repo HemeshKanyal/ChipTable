@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { potTotal } from "./betting";
-import { computePots, contestedPots, handPots, settle } from "./pots";
+import { computePots, contestedPots, currentPots, handPots, settle } from "./pots";
 import { chipsOnTable, deal, p, play } from "./testkit";
 import { EngineError } from "./types";
 
@@ -146,5 +146,28 @@ describe("settle", () => {
     expect(() => settle(s, [["A"], ["B"], ["C"]])).toThrow(EngineError);
     const betting = deal({ A: [0, 100], B: [1, 100] }, 0);
     expect(() => settle(betting, [])).toThrow(/isn't at showdown/);
+  });
+});
+
+describe("currentPots", () => {
+  it("is one pot while nobody is all-in, even before everyone has put chips in", () => {
+    const s = deal({ A: [0, 1000], B: [1, 1000], C: [2, 1000] }, 0);
+    expect(currentPots(s)).toEqual([{ amount: 15, eligible: ["A", "B", "C"] }]);
+  });
+
+  it("caps a pot at an all-in, keeping players still betting in every pot", () => {
+    // A (first to act) shoves 50; B and C are still betting.
+    let s = play(deal({ A: [0, 50], B: [1, 1000], C: [2, 1000] }, 0), ["A", "allIn"]);
+    expect(currentPots(s)).toEqual([{ amount: 65, eligible: ["A", "B", "C"] }]);
+    s = play(s, ["B", "call"], ["C", 200]);
+    expect(currentPots(s)).toEqual([
+      { amount: 150, eligible: ["A", "B", "C"] },
+      { amount: 150, eligible: ["B", "C"] },
+    ]);
+  });
+
+  it("matches handPots once betting is over", () => {
+    const s = play(deal({ A: [0, 50], B: [1, 300], C: [2, 1000] }, 0), ["A", "allIn"], ["B", "allIn"], ["C", "call"]);
+    expect(currentPots(s)).toEqual(handPots(s));
   });
 });

@@ -214,12 +214,25 @@ service cloud.firestore {
         return (before == null
                 && after is string
                 && !exists(handPath(roomId, after))
-                && getAfter(handPath(roomId, after)).data.status == 'betting'
+                // A guided hand can start at showdown if the blinds put everyone all-in.
+                && getAfter(handPath(roomId, after)).data.status in ['betting', 'showdown']
                 && request.resource.data.handCount == resource.data.get('handCount', 0) + 1)
           || (before != null
                 && after == null
                 && getAfter(handPath(roomId, before)).data.status in ['complete', 'cancelled']
                 && request.resource.data.lastHandId == before);
+      }
+
+      // A guided hand ends when everyone else folds, in the folding player's own write.
+      function foldEndOk() {
+        let before = resource.data.get('currentHandId', null);
+        let h = getAfter(handPath(roomId, before)).data;
+        return before != null
+          && request.resource.data.currentHandId == null
+          && request.resource.data.lastHandId == before
+          && h.mode == 'guided'
+          && h.status == 'complete'
+          && h.result.decidedBy == 'fold';
       }
 
       function newHostOk() {
@@ -267,6 +280,11 @@ service cloud.firestore {
           && changed().hasOnly(['seats', 'hostUid', 'lastActiveAt'])
           && (!changed().hasAny(['seats']) || seatChangeOk())
           && (!changed().hasAny(['hostUid']) || takeoverOk()))
+        ||
+        // Members: closing a guided hand their fold just ended.
+        (isMember(roomId)
+          && changed().hasOnly(['currentHandId', 'lastHandId', 'lastActiveAt'])
+          && foldEndOk())
       );
 
       allow delete: if false;
@@ -318,15 +336,29 @@ service cloud.firestore {
           return d > 0
             && request.resource.data.stack >= 0
             && resource.data.status == 'seated'
+            && get(h).data.mode == 'wallet'
             && get(h).data.status == 'betting'
             && getAfter(h).data.contributions[uid] == get(h).data.contributions.get(uid, 0) + d;
         }
 
         function payoutOk() {
           let h = currentHandPath(roomId);
-          return get(h).data.status in ['betting', 'voting']
+          return get(h).data.mode == 'wallet'
+            && get(h).data.status in ['betting', 'voting']
             && getAfter(h).data.status in ['complete', 'cancelled']
             && request.resource.data.stack == resource.data.stack + getAfter(h).data.result.payouts[uid];
+        }
+
+        // Guided stacks only move when the hand is paid: by exactly payout − chips put in.
+        function guidedSettleOk() {
+          let h = currentHandPath(roomId);
+          let after = getAfter(h).data;
+          return get(h).data.mode == 'guided'
+            && get(h).data.status in ['betting', 'voting']
+            && after.status == 'complete'
+            && request.resource.data.stack >= 0
+            && request.resource.data.stack == resource.data.stack
+                 - after.contributions.get(uid, 0) + after.result.payouts.get(uid, 0);
         }
 
         allow read: if isMember(roomId) || (signedIn() && me() == uid);
@@ -369,6 +401,11 @@ service cloud.firestore {
           (isHost(roomId)
             && changed().hasOnly(['stack'])
             && payoutOk())
+          ||
+          // Whoever finishes a guided hand (the host after a vote, or the last player to fold).
+          (isMember(roomId)
+            && changed().hasOnly(['stack'])
+            && guidedSettleOk())
         );
 
         allow delete: if false;
@@ -388,7 +425,8 @@ service cloud.firestore {
           let d = a.pot - b.pot;
           let n = b.actions.size();
           let mine = playerPath(roomId, me());
-          return b.status == 'betting'
+          return b.mode == 'wallet'
+            && b.status == 'betting'
             && changed().hasOnly(['pot', 'contributions', 'actions'])
             && d > 0
             && a.contributions.diff(b.contributions).affectedKeys().hasOnly([me()])
@@ -406,7 +444,8 @@ service cloud.firestore {
         // Host closes betting and points the hand at an open vote (also used for re-votes).
         function openVoteOk() {
           let a = request.resource.data;
-          return resource.data.status in ['betting', 'voting']
+          return resource.data.mode == 'wallet'
+            && resource.data.status in ['betting', 'voting']
             && a.status == 'voting'
             && changed().hasOnly(['status', 'voteId'])
             && getAfter(votePath(roomId, a.voteId)).data.handId == handId
@@ -419,7 +458,8 @@ service cloud.firestore {
           let b = resource.data;
           let a = request.resource.data;
           let p = a.result.payouts;
-          return b.status in ['betting', 'voting']
+          return b.mode == 'wallet'
+            && b.status in ['betting', 'voting']
             && a.status in ['complete', 'cancelled']
             && changed().hasOnly(['status', 'result', 'endedAt'])
             && a.endedAt == request.time
@@ -436,32 +476,156 @@ service cloud.firestore {
                 : (a.result.decidedBy == 'cancelled' && p == b.contributions));
         }
 
+        // ---------------- guided mode
+        // The engine state rides on the hand doc. Rules can't replay the engine (no loops), so they
+        // pin down who acted, that it's the next move, and the chip totals. See SECURITY.md.
+
+        // Everyone dealt in has a total, none negative, adding up to the pot; toActUid mirrors the engine.
+        function guidedChipsOk(a) {
+          return a.contributions.keys().hasOnly(a.participants)
+            && allNonNegative10(a.contributions.values())
+            && a.pot == sum10(a.contributions.values())
+            && a.toActUid == a.engine.toAct;
+        }
+
+        function playerAbsent(uid) {
+          let p = get(playerPath(roomId, uid)).data;
+          return p.status == 'left' || request.time > p.lastSeen + hostTimeout();
+        }
+
+        // The player to act makes their move. The host may only fold for a player who left or went quiet.
+        // Your own total can only grow, and never past the stack you sat down with.
+        function guidedActionOk() {
+          let b = resource.data;
+          let a = request.resource.data;
+          let actor = b.toActUid;
+          return b.mode == 'guided'
+            && b.status == 'betting'
+            && actor is string
+            && (actor == me() || (isHost(roomId) && a.lastAction.type == 'fold' && playerAbsent(actor)))
+            && changed().hasOnly([
+                 'engine', 'status', 'toActUid', 'street', 'pot', 'contributions', 'pots',
+                 'actionCount', 'lastAction', 'result', 'endedAt'])
+            && a.actionCount == b.actionCount + 1
+            && a.lastAction.uid == actor
+            && guidedChipsOk(a)
+            && a.contributions.get(actor, 0) >= b.contributions.get(actor, 0)
+            && a.contributions.get(actor, 0) <= get(playerPath(roomId, actor)).data.stack
+            && ((a.status in ['betting', 'showdown'] && !changed().hasAny(['result', 'endedAt']))
+                || (a.status == 'complete' && foldWinOk()));
+        }
+
+        // Everyone else folded: the last player takes the whole pot, no vote.
+        function foldWinOk() {
+          let a = request.resource.data;
+          let w = a.result.winners;
+          return a.lastAction.type == 'fold'
+            && a.endedAt == request.time
+            && a.result.keys().hasOnly(['winners', 'payouts', 'decidedBy', 'tally', 'voteRounds'])
+            && a.result.decidedBy == 'fold'
+            && w.size() == 1
+            && a.result.payouts.keys().hasOnly(w)
+            && a.result.payouts[w[0]] == a.pot
+            && getAfter(roomPath(roomId)).data.currentHandId == null;
+        }
+
+        // Host at showdown: one vote per pot (null for pots only one player can win).
+        function openPotVotesOk() {
+          let b = resource.data;
+          let a = request.resource.data;
+          return b.mode == 'guided'
+            && b.status == 'showdown'
+            && a.status == 'voting'
+            && changed().hasOnly(['status', 'voteIds'])
+            && a.voteIds.size() == b.pots.size();
+        }
+
+        // Host re-runs one pot's vote.
+        function redoPotVoteOk() {
+          let b = resource.data;
+          return b.mode == 'guided'
+            && b.status == 'voting'
+            && changed().hasOnly(['voteIds'])
+            && request.resource.data.voteIds.size() == b.voteIds.size();
+        }
+
+        // Host pays out after the votes, or calls the hand off. Stacks never moved during the hand,
+        // so a cancel just records that everyone keeps what they put in.
+        function guidedFinishOk() {
+          let b = resource.data;
+          let a = request.resource.data;
+          let p = a.result.payouts;
+          return b.mode == 'guided'
+            && changed().hasOnly(['status', 'result', 'endedAt'])
+            && a.endedAt == request.time
+            && a.result.keys().hasOnly(['winners', 'payouts', 'decidedBy', 'tally', 'voteRounds', 'pots'])
+            && allNonNegative10(p.values())
+            && sum10(p.values()) == b.pot
+            && getAfter(roomPath(roomId)).data.currentHandId == null
+            && (a.status == 'complete'
+                ? (b.status == 'voting' && a.result.decidedBy == 'vote' && p.keys().hasOnly(a.result.winners))
+                : (a.status == 'cancelled'
+                   && b.status in ['betting', 'showdown', 'voting']
+                   && a.result.decidedBy == 'cancelled'
+                   && p == b.contributions));
+        }
+
+        // ---------------- create
+
+        function walletCreateOk() {
+          let a = request.resource.data;
+          return a.keys().hasOnly([
+               'number', 'mode', 'status', 'buttonSeat', 'pot', 'contributions', 'actions',
+               'participants', 'voteId', 'startedBy', 'startedAt', 'endedAt', 'result'])
+            && a.mode == 'wallet'
+            && a.status == 'betting'
+            && a.pot == 0
+            && a.contributions == {}
+            && a.actions == []
+            && a.voteId == null;
+        }
+
+        // Blinds are in from the start, and must match the room's settings.
+        function guidedCreateOk() {
+          let a = request.resource.data;
+          let s = getAfter(roomPath(roomId)).data.settings;
+          return a.keys().hasOnly([
+               'number', 'mode', 'status', 'buttonSeat', 'pot', 'contributions', 'participants',
+               'engine', 'toActUid', 'street', 'pots', 'voteIds', 'actionCount', 'lastAction',
+               'startedBy', 'startedAt', 'endedAt', 'result'])
+            && a.mode == 'guided'
+            && a.status in ['betting', 'showdown']
+            && a.street == 'preflop'
+            && a.voteIds == []
+            && a.actionCount == 0
+            && a.lastAction == null
+            && a.engine.sb == s.sb
+            && a.engine.bb == s.bb
+            && a.engine.buttonSeat == a.buttonSeat
+            && a.pot <= s.sb + s.bb
+            && guidedChipsOk(a);
+        }
+
         allow read: if isMember(roomId);
 
         allow create: if isHost(roomId)
-          && request.resource.data.keys().hasOnly([
-               'number', 'mode', 'status', 'buttonSeat', 'pot', 'contributions', 'actions',
-               'participants', 'voteId', 'startedBy', 'startedAt', 'endedAt', 'result'])
-          && request.resource.data.mode == 'wallet'
-          && request.resource.data.status == 'betting'
-          && request.resource.data.pot == 0
-          && request.resource.data.contributions == {}
-          && request.resource.data.actions == []
           && request.resource.data.participants is list
           && request.resource.data.participants.size() >= 2
           && request.resource.data.participants.size() <= 10
           && request.resource.data.buttonSeat is int
-          && request.resource.data.voteId == null
           && request.resource.data.endedAt == null
           && request.resource.data.result == null
           && request.resource.data.startedBy == me()
           && request.resource.data.startedAt == request.time
           && request.resource.data.number == getAfter(roomPath(roomId)).data.handCount
-          && getAfter(roomPath(roomId)).data.currentHandId == handId;
+          && getAfter(roomPath(roomId)).data.currentHandId == handId
+          && (walletCreateOk() || guidedCreateOk());
 
         allow update: if isMember(roomId) && isCurrent() && (
           contributionOk()
-          || (isHost(roomId) && (openVoteOk() || finishOk()))
+          || guidedActionOk()
+          || (isHost(roomId)
+              && (openVoteOk() || finishOk() || openPotVotesOk() || redoPotVoteOk() || guidedFinishOk()))
         );
 
         allow delete: if false;
@@ -485,6 +649,20 @@ service cloud.firestore {
             && mine.hasOnly(resource.data.candidates);
         }
 
+        // The hand points at this new vote. Wallet: its one vote. Guided: the vote for pot
+        // `potIndex`, whose candidates are exactly the players who can win that pot.
+        function pointedAtByHand() {
+          let v = request.resource.data;
+          let h = getAfter(handPath(roomId, v.handId)).data;
+          return v.potIndex is int
+            && (h.mode == 'wallet'
+                ? (v.potIndex == 0 && h.voteId == voteId)
+                : (v.potIndex >= 0
+                   && v.potIndex < h.voteIds.size()
+                   && h.voteIds[v.potIndex] == voteId
+                   && v.candidates == h.pots[v.potIndex].eligible));
+        }
+
         // Host may accept only once time is up or everyone has voted. Redo/cancel any time.
         function closeOk() {
           let a = request.resource.data;
@@ -506,7 +684,7 @@ service cloud.firestore {
                'voterUids', 'ballots', 'status', 'hostDecision', 'closedAt'])
           && request.resource.data.type == 'winner'
           && request.resource.data.status == 'open'
-          && request.resource.data.potIndex == 0
+          && pointedAtByHand()
           && request.resource.data.round is int
           && request.resource.data.openedAt == request.time
           && request.resource.data.durationMs == 30000
@@ -517,13 +695,37 @@ service cloud.firestore {
           && request.resource.data.candidates.size() >= 1
           && request.resource.data.candidates.size() <= 10
           && request.resource.data.voterUids is list
-          && request.resource.data.voterUids.size() <= 10
-          && getAfter(handPath(roomId, request.resource.data.handId)).data.voteId == voteId;
+          && request.resource.data.voterUids.size() <= 10;
 
         allow update: if isMember(roomId)
           && resource.data.status == 'open'
           && (ballotOk() || (isHost(roomId) && closeOk()));
 
+        allow delete: if false;
+      }
+
+      // ---------------------------------------------------------- nudges
+
+      // One doc per sender (id = their uid), overwritten each time, so the 15s limit is checkable.
+      // Keep in sync with NUDGE_COOLDOWN_MS and NUDGE_PRESETS in lib/hand/guided.ts.
+      match /nudges/{senderUid} {
+        function nudgeOk() {
+          let n = request.resource.data;
+          return isMember(roomId)
+            && me() == senderUid
+            && n.keys().hasOnly(['to', 'preset', 'at'])
+            && n.to is string
+            && n.to != me()
+            && exists(playerPath(roomId, n.to))
+            && n.preset is int
+            && n.preset >= 0
+            && n.preset < 8
+            && n.at == request.time;
+        }
+
+        allow read: if isMember(roomId);
+        allow create: if nudgeOk();
+        allow update: if nudgeOk() && request.time >= resource.data.at + duration.value(15, 's');
         allow delete: if false;
       }
     }

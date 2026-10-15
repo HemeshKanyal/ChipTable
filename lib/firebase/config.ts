@@ -12,7 +12,11 @@ export const useEmulators = process.env.NEXT_PUBLIC_USE_FIREBASE_EMULATORS === "
 
 export const emulatorHostOverride = process.env.NEXT_PUBLIC_FIREBASE_EMULATOR_HOST || "";
 
-export const EMULATOR_PORTS = { auth: 9099, firestore: 8080 } as const;
+// Match firebase.json. Overridable so a second checkout can run its own emulators side by side.
+export const EMULATOR_PORTS = {
+  auth: Number(process.env.NEXT_PUBLIC_AUTH_EMULATOR_PORT) || 9099,
+  firestore: Number(process.env.NEXT_PUBLIC_FIRESTORE_EMULATOR_PORT) || 8080,
+} as const;
 
 /** Non-null when required env vars are missing. Same value on server and client. */
 export const configErrorMessage: string | null =

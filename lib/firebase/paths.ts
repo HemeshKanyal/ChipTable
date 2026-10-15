@@ -12,3 +12,5 @@ export const handsCol = (db: Firestore, roomId: string) => collection(db, "rooms
 export const handRef = (db: Firestore, roomId: string, handId: string) => doc(db, "rooms", roomId, "hands", handId);
 export const votesCol = (db: Firestore, roomId: string) => collection(db, "rooms", roomId, "votes");
 export const voteRef = (db: Firestore, roomId: string, voteId: string) => doc(db, "rooms", roomId, "votes", voteId);
+export const nudgesCol = (db: Firestore, roomId: string) => collection(db, "rooms", roomId, "nudges");
+export const nudgeRef = (db: Firestore, roomId: string, fromUid: string) => doc(db, "rooms", roomId, "nudges", fromUid);

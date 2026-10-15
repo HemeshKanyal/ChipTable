@@ -1,6 +1,6 @@
 "use client";
 
-import { motion } from "framer-motion";
+import { motion, useReducedMotion } from "framer-motion";
 import { Avatar } from "@/components/ui/Avatar";
 import { CrownIcon, PlusIcon } from "@/components/ui/icons";
 import { formatChips } from "@/lib/chips";
@@ -15,9 +15,29 @@ interface SeatProps {
   /** Present when the viewer may sit in this (empty) seat. */
   onSit?: () => void;
   sitLabel?: string;
+  /** Guided hands: chips behind right now (the player doc's stack settles when the hand ends). */
+  stack?: number;
+  /** Guided hands: out of this hand, or all in. */
+  handState?: "folded" | "allIn" | null;
+  /** Guided hands: it's this player's turn. */
+  turn?: boolean;
+  blind?: "SB" | "BB" | null;
 }
 
-export function Seat({ seatIndex, player, isMe, isHost, online, onSit, sitLabel = "Sit" }: SeatProps) {
+export function Seat({
+  seatIndex,
+  player,
+  isMe,
+  isHost,
+  online,
+  onSit,
+  sitLabel = "Sit",
+  stack,
+  handState = null,
+  turn = false,
+  blind = null,
+}: SeatProps) {
+  const reduceMotion = useReducedMotion();
   if (!player) {
     return (
       <button
@@ -37,6 +57,8 @@ export function Seat({ seatIndex, player, isMe, isHost, online, onSit, sitLabel 
 
   const sittingOut = player.status === "sittingOut";
   const size = isMe ? 56 : 44;
+  const chips = stack ?? player.stack;
+  const folded = handState === "folded";
 
   return (
     <motion.div
@@ -44,18 +66,49 @@ export function Seat({ seatIndex, player, isMe, isHost, online, onSit, sitLabel 
       initial={{ scale: 0.6, opacity: 0 }}
       animate={{ scale: 1, opacity: 1 }}
       transition={{ type: "spring", stiffness: 400, damping: 24 }}
-      className={`flex flex-col items-center ${sittingOut ? "opacity-55" : ""}`}
-      aria-label={`Seat ${seatIndex + 1}: ${player.displayName}${isMe ? " (you)" : ""}, ${formatChips(player.stack)} chips${
+      className={`flex flex-col items-center transition-opacity ${sittingOut || folded ? "opacity-50" : ""}`}
+      aria-label={`Seat ${seatIndex + 1}: ${player.displayName}${isMe ? " (you)" : ""}, ${formatChips(chips)} chips${
         sittingOut ? ", sitting out" : ""
-      }${online ? "" : ", offline"}`}
+      }${folded ? ", folded" : handState === "allIn" ? ", all in" : ""}${turn ? ", to act" : ""}${online ? "" : ", offline"}`}
     >
       <div className="relative">
+        {turn && (
+          <motion.span
+            aria-hidden
+            className="absolute -inset-1.5 rounded-full border-2 border-gold-300"
+            initial={{ opacity: 0.9, scale: 1 }}
+            animate={
+              reduceMotion
+                ? { opacity: 1 }
+                : {
+                    opacity: [0.95, 0.35, 0.95],
+                    scale: [1, 1.12, 1],
+                    boxShadow: [
+                      "0 0 10px 2px rgb(241 214 141 / 0.7)",
+                      "0 0 22px 8px rgb(241 214 141 / 0.15)",
+                      "0 0 10px 2px rgb(241 214 141 / 0.7)",
+                    ],
+                  }
+            }
+            transition={{ duration: 1.4, repeat: Infinity, ease: "easeInOut" }}
+          />
+        )}
         <Avatar
           name={player.displayName}
           photoURL={player.photoURL}
           size={size}
           className={isMe ? "ring-gold-300!" : ""}
         />
+        {blind && (
+          <span
+            className={`absolute -right-2 -top-1.5 flex h-5 min-w-5 items-center justify-center rounded-full border border-black/30 px-0.5 text-[9px] font-extrabold shadow ${
+              blind === "BB" ? "bg-gold-400 text-felt-950" : "bg-ivory-muted text-felt-950"
+            }`}
+            title={blind === "BB" ? "Big blind" : "Small blind"}
+          >
+            {blind}
+          </span>
+        )}
         {isHost && (
           <span className="absolute -left-1.5 -top-2 rotate-[-18deg] drop-shadow" title="Host">
             <CrownIcon size={isMe ? 20 : 16} />
@@ -73,7 +126,7 @@ export function Seat({ seatIndex, player, isMe, isHost, online, onSit, sitLabel 
           {isMe ? "You" : player.displayName.split(" ")[0]}
         </span>
         <span className="text-[11px] font-semibold leading-tight text-gold-300 tabular-nums">
-          {sittingOut ? "Sitting out" : formatChips(player.stack)}
+          {folded ? "Folded" : handState === "allIn" ? "ALL-IN" : sittingOut ? "Sitting out" : formatChips(chips)}
         </span>
       </div>
     </motion.div>

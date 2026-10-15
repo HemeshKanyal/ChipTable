@@ -28,6 +28,12 @@ interface Burst {
 const CENTER: Point = { x: 50, y: 50 };
 const topChip = (amount: number) => breakdownChips(Math.max(1, amount))[0].denomination.value;
 
+/** Where a seat's bet sits on the felt: part way from the seat to the middle. */
+export const betSpot = (seat: Point): Point => ({
+  x: seat.x + (CENTER.x - seat.x) * 0.42,
+  y: seat.y + (CENTER.y - seat.y) * 0.42,
+});
+
 /**
  * Animates what changed in the hand since the last render: chips flying seat → pot for each
  * new bet, and pot → winners (with a sparkle) when the hand is paid out.
@@ -45,18 +51,20 @@ export function ChipFlights({ hand, seatOf }: { hand: Hand | null; seatOf: (uid:
 
   useEffect(() => {
     if (!hand) return;
+    // Wallet: the bet feed; chips go to the pot. Guided: the action log; chips land in front of the seat.
+    const events: { uid: string; amount: number }[] = hand.mode === "wallet" ? hand.actions : hand.engine.log;
     const prev = seen.current;
-    seen.current = { handId: hand.id, actions: hand.actions.length, status: hand.status };
+    seen.current = { handId: hand.id, actions: events.length, status: hand.status };
     // The first time we see a hand there's nothing to animate from.
     if (!prev || prev.handId !== hand.id || reduceMotion) return;
 
     const newFlights: Flight[] = [];
     const newBursts: Burst[] = [];
-    hand.actions.slice(prev.actions).forEach((a, i) => {
+    events.slice(prev.actions).forEach((a, i) => {
       const from = seatOfRef.current(a.uid);
-      if (from) {
-        newFlights.push({ id: `${hand.id}-bet-${prev.actions + i}`, from, to: CENTER, value: topChip(a.amount), delay: 0 });
-      }
+      if (!from || a.amount <= 0) return;
+      const to = hand.mode === "wallet" ? CENTER : betSpot(from);
+      newFlights.push({ id: `${hand.id}-bet-${prev.actions + i}`, from, to, value: topChip(a.amount), delay: 0 });
     });
     if (prev.status !== "complete" && hand.status === "complete" && hand.result) {
       hand.result.winners.forEach((uid, w) => {

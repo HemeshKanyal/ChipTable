@@ -35,7 +35,9 @@ export type RoomErrorCode =
   | "hand-in-progress"
   | "not-enough-players"
   | "not-enough-chips"
-  | "hand-closed";
+  | "hand-closed"
+  | "hand-moved"
+  | "too-soon";
 
 export class RoomError extends Error {
   constructor(

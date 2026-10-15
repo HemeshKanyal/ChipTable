@@ -18,7 +18,7 @@ import {
 } from "@/lib/firebase/hands";
 import { createRoom, joinRoom, lookupCode, setSittingOut, updateRoomSettings } from "@/lib/firebase/rooms";
 import { DEFAULT_SETTINGS } from "@/lib/room/settings";
-import type { HandDoc, Identity, PlayerDoc, RoomDoc, VoteDoc } from "@/lib/types";
+import type { WalletHandDoc, Identity, PlayerDoc, RoomDoc, VoteDoc } from "@/lib/types";
 
 let env: RulesTestEnvironment;
 const [emuHost, emuPort] = (process.env.FIRESTORE_EMULATOR_HOST ?? "127.0.0.1:8080").split(":");
@@ -70,13 +70,13 @@ describe("starting a hand", () => {
     const { roomId } = await table();
     await expect(startWalletHand(dbFor(bob), roomId, "bob")).rejects.toThrow();
     const handId = await startWalletHand(dbFor(ann), roomId, "ann");
-    const hand = await admin<HandDoc>(`rooms/${roomId}/hands/${handId}`);
+    const hand = await admin<WalletHandDoc>(`rooms/${roomId}/hands/${handId}`);
     expect(hand).toMatchObject({ number: 1, status: "betting", buttonSeat: 0, participants: ["ann", "bob", "cat"] });
     await expect(startWalletHand(dbFor(ann), roomId, "ann")).rejects.toMatchObject({ code: "hand-in-progress" });
 
     await cancelHand(dbFor(ann), roomId, handId);
     const second = await startWalletHand(dbFor(ann), roomId, "ann");
-    expect((await admin<HandDoc>(`rooms/${roomId}/hands/${second}`)).buttonSeat).toBe(1);
+    expect((await admin<WalletHandDoc>(`rooms/${roomId}/hands/${second}`)).buttonSeat).toBe(1);
   });
 
   it("needs two seated players", async () => {
@@ -102,7 +102,7 @@ describe("contributing", () => {
     await contribute(dbFor(bob), roomId, handId, "bob", 200);
     await contribute(dbFor(bob), roomId, handId, "bob", 50);
     await contribute(dbFor(cat), roomId, handId, "cat", 100);
-    const hand = await admin<HandDoc>(`rooms/${roomId}/hands/${handId}`);
+    const hand = await admin<WalletHandDoc>(`rooms/${roomId}/hands/${handId}`);
     expect(hand.pot).toBe(350);
     expect(hand.contributions).toEqual({ bob: 250, cat: 100 });
     expect(hand.actions.map((a) => [a.uid, a.amount])).toEqual([
@@ -170,7 +170,7 @@ describe("winner vote", () => {
     await contribute(dbFor(bob), roomId, handId, "bob", 100);
     await expect(openWinnerVote(dbFor(bob), roomId, handId)).rejects.toThrow();
     await openWinnerVote(dbFor(ann), roomId, handId);
-    const voteId = (await admin<HandDoc>(`rooms/${roomId}/hands/${handId}`)).voteId!;
+    const voteId = (await admin<WalletHandDoc>(`rooms/${roomId}/hands/${handId}`)).voteId!;
     return { roomId, handId, voteId };
   }
 
@@ -201,7 +201,7 @@ describe("winner vote", () => {
     expect(payouts).toEqual({ bob: 101, ann: 100 });
     expect(await stack(roomId, "ann")).toBe(999);
     expect(await stack(roomId, "bob")).toBe(1001);
-    const hand = await admin<HandDoc>(`rooms/${roomId}/hands/${handId}`);
+    const hand = await admin<WalletHandDoc>(`rooms/${roomId}/hands/${handId}`);
     expect(hand.status).toBe("complete");
     expect(hand.result?.tally).toEqual({ "ann,bob": 2, bob: 1 });
     expect(await admin<RoomDoc>(`rooms/${roomId}`)).toMatchObject({ currentHandId: null, lastHandId: handId });
@@ -242,7 +242,7 @@ describe("winner vote", () => {
     const { roomId, handId, voteId } = await toVote();
     await castBallot(dbFor(cat), roomId, voteId, "cat", ["ann"]);
     await redoVote(dbFor(ann), roomId, handId, voteId);
-    const hand = await admin<HandDoc>(`rooms/${roomId}/hands/${handId}`);
+    const hand = await admin<WalletHandDoc>(`rooms/${roomId}/hands/${handId}`);
     expect(hand.voteId).not.toBe(voteId);
     const fresh = await admin<VoteDoc>(`rooms/${roomId}/votes/${hand.voteId}`);
     expect(fresh).toMatchObject({ round: 2, ballots: {}, status: "open" });
@@ -254,6 +254,6 @@ describe("winner vote", () => {
     await cancelHand(dbFor(ann), roomId, handId);
     expect(await stack(roomId, "ann")).toBe(1000);
     expect(await stack(roomId, "bob")).toBe(1000);
-    expect((await admin<HandDoc>(`rooms/${roomId}/hands/${handId}`)).status).toBe("cancelled");
+    expect((await admin<WalletHandDoc>(`rooms/${roomId}/hands/${handId}`)).status).toBe("cancelled");
   });
 });

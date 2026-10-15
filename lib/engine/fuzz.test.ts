@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { applyAction, legalActions, potTotal, startHand } from "./betting";
 import { nextButtonSeat } from "./button";
-import { handPots, settle } from "./pots";
+import { currentPots, handPots, settle } from "./pots";
 import type { HandState, PlayerAction } from "./types";
 
 /** Small seeded PRNG so failures reproduce. */
@@ -71,6 +71,13 @@ describe("random hands", () => {
           }
         }
         expect(chips(s)).toBe(total);
+        // firestore.rules relies on this: your own move never lowers what you've put in.
+        const totalIn = (st: HandState) => st.players.find((p) => p.uid === actor!.uid)!.totalIn;
+        expect(totalIn(s)).toBeGreaterThanOrEqual(totalIn(before));
+        // What the table shows always adds up, and nobody folded can win a pot.
+        const shown = currentPots(s);
+        expect(shown.reduce((n, pot) => n + pot.amount, 0)).toBe(potTotal(s));
+        for (const pot of shown) expect(pot.eligible.every((uid) => !s.players.find((p) => p.uid === uid)!.folded)).toBe(true);
         for (const p of s.players) {
           expect(p.stack).toBeGreaterThanOrEqual(0);
           expect(p.committed).toBeLessThanOrEqual(p.totalIn);
@@ -80,6 +87,8 @@ describe("random hands", () => {
 
       const pots = s.phase === "showdown" ? handPots(s) : [];
       if (pots.length > 1) sidePotHands++;
+      // The showdown vote relies on this: the main pot always needs a decision.
+      if (s.phase === "showdown") expect(pots[0].eligible.length).toBeGreaterThan(1);
       expect(pots.reduce((n, p) => n + p.amount, 0)).toBe(s.phase === "showdown" ? potTotal(s) : 0);
       for (const pot of pots) {
         for (const uid of pot.eligible) expect(s.players.find((p) => p.uid === uid)!.folded).toBe(false);

@@ -9,45 +9,69 @@ import type { GameMode } from "@/lib/room/settings";
 interface HostHandBarProps {
   mode: GameMode;
   hand: Hand | null;
+  /** Players who'd be dealt in (guided: seated with chips). */
   seatedCount: number;
   voteDecided: boolean;
+  /** Guided: who we're waiting on, and whether they've gone (left, or quiet for 2+ minutes). */
+  waitingOn: { name: string; absent: boolean } | null;
+  /** Guided showdown: what the dealer still has to do. */
+  showdownHint: string | null;
   busy: boolean;
   onStart: () => void;
   onShowdown: () => void;
   onShowVote: () => void;
+  onFoldFor: () => void;
   onCancel: () => void;
 }
 
 /** The host's hand controls under the table. */
 export function HostHandBar(props: HostHandBarProps) {
-  const { mode, hand, seatedCount, voteDecided, busy, onStart, onShowdown, onShowVote, onCancel } = props;
+  const { mode, hand, seatedCount, voteDecided, waitingOn, showdownHint, busy } = props;
   const [confirmCancel, setConfirmCancel] = useState(false);
 
   let caption: string;
-  let primary: React.ReactNode;
+  let primary: React.ReactNode = null;
   if (!hand) {
-    if (mode === "guided") {
-      caption = "Guided mode is coming in a later update. Switch the room to Wallet in settings to play now.";
-      primary = null;
+    if (seatedCount < 2) {
+      caption =
+        mode === "guided"
+          ? "Waiting for at least two seated players with chips."
+          : "Waiting for at least two seated players.";
     } else {
-      caption = seatedCount < 2 ? "Waiting for at least two seated players." : `${seatedCount} players will be dealt in.`;
+      caption =
+        mode === "guided"
+          ? `${seatedCount} players will be dealt in. Blinds go in automatically.`
+          : `${seatedCount} players will be dealt in.`;
+    }
+    primary = (
+      <Button className="h-10" disabled={busy || seatedCount < 2} onClick={props.onStart}>
+        {mode === "guided" ? "Deal hand" : "Start hand"}
+      </Button>
+    );
+  } else if (hand.mode === "guided" && hand.status === "betting") {
+    caption = waitingOn
+      ? waitingOn.absent
+        ? `${waitingOn.name} has gone quiet. You can fold their hand.`
+        : `Waiting on ${waitingOn.name}.`
+      : "Your move.";
+    if (waitingOn?.absent) {
       primary = (
-        <Button className="h-10" disabled={busy || seatedCount < 2} onClick={onStart}>
-          Start hand
+        <Button className="h-10" variant="felt" disabled={busy} onClick={props.onFoldFor}>
+          Fold for {waitingOn.name}
         </Button>
       );
     }
-  } else if (hand.status === "betting") {
-    caption = "When the cards are shown, call the vote.";
+  } else if (hand.status === "betting" || hand.status === "showdown") {
+    caption = showdownHint ?? "When the cards are shown, call the vote.";
     primary = (
-      <Button className="h-10" disabled={busy} onClick={onShowdown}>
+      <Button className="h-10" disabled={busy} onClick={props.onShowdown}>
         Showdown · vote
       </Button>
     );
   } else {
     caption = voteDecided ? "Votes are in. Confirm the winner." : "The table is voting…";
     primary = (
-      <Button className="h-10" variant={voteDecided ? "gold" : "felt"} onClick={onShowVote}>
+      <Button className="h-10" variant={voteDecided ? "gold" : "felt"} onClick={props.onShowVote}>
         {voteDecided ? "Review vote" : "Open vote"}
       </Button>
     );
@@ -68,11 +92,11 @@ export function HostHandBar(props: HostHandBarProps) {
               disabled={busy}
               onClick={() => {
                 setConfirmCancel(false);
-                onCancel();
+                props.onCancel();
               }}
               className="h-7 rounded-lg bg-danger px-3 text-xs font-semibold text-white"
             >
-              Tap again: call off and refund
+              Tap again: call off{hand.mode === "wallet" ? " and refund" : ""}
             </button>
           ) : (
             <button

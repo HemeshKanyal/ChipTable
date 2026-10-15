@@ -11,6 +11,7 @@ import { RollingNumber } from "@/components/ui/RollingNumber";
 import { ArrowLeftIcon, SettingsIcon, ShareIcon, UsersIcon } from "@/components/ui/icons";
 import { useToast } from "@/components/ui/Toast";
 import { formatChips } from "@/lib/chips";
+import type { PlayerAction } from "@/lib/engine";
 import { getFirebase } from "@/lib/firebase/client";
 import {
   RoomError,
@@ -31,19 +32,31 @@ import {
   redoVote,
   startWalletHand,
 } from "@/lib/firebase/hands";
-import { useHand, useVote } from "@/lib/hooks/useHand";
+import {
+  acceptPotVote,
+  openPotVotes,
+  redoPotVote,
+  sendNudge,
+  startGuidedHand,
+  takeAction,
+} from "@/lib/firebase/guided";
+import { NUDGE_COOLDOWN_MS, streetBanner } from "@/lib/hand/guided";
+import { useHand, useVotes } from "@/lib/hooks/useHand";
 import { useNow } from "@/lib/hooks/useNow";
+import { useNudges } from "@/lib/hooks/useNudges";
 import { useHostWatch, usePresence } from "@/lib/hooks/usePresence";
 import { useRoom, type Room } from "@/lib/hooks/useRoom";
-import { firstFreeSeat } from "@/lib/room/seating";
+import { HOST_TIMEOUT_MS, firstFreeSeat } from "@/lib/room/seating";
 import { voteIsDecided } from "@/lib/vote/tally";
 import type { PlayerDoc } from "@/lib/types";
+import { GuidedControls } from "./GuidedControls";
+import { HostHandBar } from "./HostHandBar";
 import { InviteSheet } from "./InviteSheet";
+import { NudgeSheet, NudgeToasts, useNudgeToasts } from "./Nudges";
 import { PlayersSheet } from "./PlayersSheet";
 import { PokerTable } from "./PokerTable";
-import { HostHandBar } from "./HostHandBar";
 import { SettingsSheet } from "./SettingsSheet";
-import { VoteSheet } from "./VoteSheet";
+import { VoteSheet, type PotVote } from "./VoteSheet";
 import { WalletControls } from "./WalletControls";
 
 export function RoomScreen({ roomId, openInvite }: { roomId: string; openInvite: boolean }) {
@@ -80,7 +93,7 @@ function Message({ title, children }: { title: string; children: React.ReactNode
   );
 }
 
-type Sheet = "invite" | "players" | "settings" | null;
+type Sheet = "invite" | "players" | "settings" | "nudge" | null;
 
 function RoomView({ room, players, openInvite }: { room: Room; players: PlayerDoc[]; openInvite: boolean }) {
   const user = useSignedInUser();
@@ -93,18 +106,59 @@ function RoomView({ room, players, openInvite }: { room: Room; players: PlayerDo
   // The hand in progress, or else the last one (for its result and the payout animation).
   const hand = useHand(room.id, room.currentHandId ?? room.lastHandId ?? null);
   const liveHand = hand && room.currentHandId === hand.id ? hand : null;
-  const vote = useVote(room.id, liveHand?.status === "voting" ? liveHand.voteId : null);
+  const guided = liveHand?.mode === "guided" ? liveHand : null;
+  const engine = guided?.engine ?? null;
+
+  // Winner votes: one for a wallet hand, one per contested pot at a guided showdown.
+  const voteIds = liveHand?.status === "voting" ? (liveHand.mode === "wallet" ? [liveHand.voteId] : liveHand.voteIds) : [];
+  const votes = useVotes(room.id, voteIds);
+  const voteKey = voteIds.join(",");
+  const potVotes: PotVote[] = liveHand
+    ? votes.flatMap((vote, i) => {
+        if (!vote) return [];
+        const multi = !!guided && guided.pots.length > 1;
+        return [
+          {
+            vote,
+            label: multi ? (i === 0 ? "Main pot" : `Side pot ${i}`) : null,
+            amount: guided ? guided.pots[i].amount : liveHand.pot,
+          },
+        ];
+      })
+    : [];
+  const openVotes = potVotes.filter((p) => p.vote.status === "open");
   const [voteMinimized, setVoteMinimized] = useState<string | null>(null);
-  const voteOpen = !!vote && vote.status === "open" && voteMinimized !== vote.id;
+  const voteOpen = openVotes.length > 0 && voteMinimized !== voteKey;
+  const votesDecided =
+    openVotes.length > 0 &&
+    openVotes.every(({ vote }) => voteIsDecided(vote.openedAt?.toMillis() ?? now, vote.ballots, vote.voterUids, now));
 
   const me = players.find((p) => p.uid === user.uid);
   const isHost = room.hostUid === user.uid;
   const presence = useMemo(() => players.map(toPresence), [players]);
   const seatedCount = Object.keys(room.seats).length;
   const tableFull = firstFreeSeat(room.seats, room.settings.maxPlayers) === null;
+  const firstName = (uid: string) => players.find((p) => p.uid === uid)?.displayName.split(" ")[0] ?? "Someone";
+
+  // Guided: where I stand in the hand, and who we're waiting on.
+  const myEngine = engine?.players.find((p) => p.uid === user.uid) ?? null;
+  const stillInHand = !!myEngine && !myEngine.folded;
+  const myTurn = guided?.status === "betting" && guided.toActUid === user.uid;
+  const toActUid = guided?.status === "betting" ? guided.toActUid : null;
+  const toActPlayer = toActUid ? players.find((p) => p.uid === toActUid) : undefined;
+  const toActAbsent =
+    !!toActUid &&
+    (!toActPlayer ||
+      toActPlayer.status === "left" ||
+      now - (toActPlayer.lastSeen?.toMillis() ?? 0) > HOST_TIMEOUT_MS);
 
   usePresence(room.id, user.uid, !!me);
   useHostWatch(room.id, room.hostUid, room.settings.maxPlayers, presence, user.uid, now);
+
+  // Nudges aimed at me, and my own cooldown for sending them.
+  const nudgeToasts = useNudgeToasts();
+  useNudges(room.id, user.uid, (n) => nudgeToasts.show(firstName(n.from), n.preset));
+  const [nudgeCooling, setNudgeCooling] = useState(false);
 
   // Drop ?invite=1 so a refresh doesn't pop the sheet again.
   useEffect(() => {
@@ -126,14 +180,18 @@ function RoomView({ room, players, openInvite }: { room: Room; players: PlayerDo
     if (!hand) return;
     const prev = lastSeenHand.current;
     lastSeenHand.current = { id: hand.id, status: hand.status };
-    const wasLive = prev?.id === hand.id && (prev.status === "betting" || prev.status === "voting");
-    if (!wasLive || !hand.result || hand.status === "betting" || hand.status === "voting") return;
+    const wasLive = prev?.id === hand.id && prev.status !== "complete" && prev.status !== "cancelled";
+    if (!wasLive || !hand.result || (hand.status !== "complete" && hand.status !== "cancelled")) return;
 
     const { winners, payouts, decidedBy } = hand.result;
     const name = (uid: string) =>
       uid === user.uid ? "You" : (players.find((p) => p.uid === uid)?.displayName.split(" ")[0] ?? "Someone");
-    if (decidedBy === "cancelled") toast("Hand called off. Everyone got their chips back.");
-    else if (winners.length === 1) {
+    if (decidedBy === "cancelled") {
+      toast(hand.mode === "wallet" ? "Hand called off. Everyone got their chips back." : "Hand called off. Stacks are back where they were.");
+    } else if ((hand.result.pots?.length ?? 0) > 1) {
+      // Different pots, different winners: not a split.
+      toast(`Pots paid: ${winners.map((w) => `${name(w)} ${formatChips(payouts[w])}`).join(" · ")} 🎉`, "success");
+    } else if (winners.length === 1) {
       toast(`${name(winners[0])} ${winners[0] === user.uid ? "win" : "wins"} ${formatChips(payouts[winners[0]])}! 🎉`, "success");
     } else {
       toast(`Split pot: ${winners.map((w) => `${name(w)} ${formatChips(payouts[w])}`).join(" · ")}`, "success");
@@ -157,6 +215,26 @@ function RoomView({ room, players, openInvite }: { room: Room; players: PlayerDo
   const { db } = getFirebase();
   const onSit = (seatIndex: number) =>
     act("take that seat", () => (me ? takeSeat(db, room.id, user.uid, seatIndex) : enterRoom(db, user, room.id)));
+  const onGuidedAct = (action: PlayerAction) =>
+    act("make that move", () => takeAction(db, room.id, guided!.id, user.uid, action, guided!.actionCount));
+  async function onNudge(preset: number) {
+    if (!toActUid) return false;
+    const sent = await act("nudge", () => sendNudge(db, room.id, user.uid, toActUid, preset));
+    if (sent) {
+      toast(`Nudged ${firstName(toActUid)}`);
+      setNudgeCooling(true);
+      setTimeout(() => setNudgeCooling(false), NUDGE_COOLDOWN_MS);
+    }
+    return sent;
+  }
+
+  // Chips I have behind right now: in a guided hand the stack only settles when it ends.
+  const myStack = myEngine?.stack ?? me?.stack ?? 0;
+  // Can't walk away from chips in the middle.
+  const lockedIn =
+    !!liveHand &&
+    me?.status === "seated" &&
+    (liveHand.mode === "wallet" ? (liveHand.contributions[user.uid] ?? 0) > 0 : stillInHand);
 
   return (
     <div className="flex min-h-dvh flex-col">
@@ -190,7 +268,7 @@ function RoomView({ room, players, openInvite }: { room: Room; players: PlayerDo
       </header>
 
       <div className="mx-auto flex w-full max-w-lg flex-wrap items-center justify-center gap-1.5 px-4 pt-3 text-[11px] font-semibold uppercase tracking-wider">
-        <Pill>{room.settings.mode === "guided" ? "Guided" : "Wallet"}</Pill>
+        <Pill>{(liveHand?.mode ?? room.settings.mode) === "guided" ? "Guided" : "Wallet"}</Pill>
         <Pill>
           Blinds <span className="tabular-nums">{room.settings.sb}/{room.settings.bb}</span>
         </Pill>
@@ -203,12 +281,42 @@ function RoomView({ room, players, openInvite }: { room: Room; players: PlayerDo
       </div>
 
       <main className="mx-auto flex w-full max-w-lg flex-1 flex-col justify-center px-2 py-2">
-        <PokerTable room={room} players={players} myUid={user.uid} now={now} hand={hand} onSit={onSit} />
+        <PokerTable
+          room={room}
+          players={players}
+          myUid={user.uid}
+          now={now}
+          hand={hand}
+          onSit={onSit}
+          // The action panel (and the "waiting on" line) are taller than the default bar.
+          reserveRem={myTurn ? (isHost ? 27 : 23) : toActUid ? (isHost ? 23 : 21) : isHost ? 22 : 19}
+        />
       </main>
 
       <section className="sticky bottom-0 z-20 border-t gold-hairline bg-felt-950/85 backdrop-blur-md">
         <div className="mx-auto w-full max-w-lg px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-3">
-          {liveHand?.status === "betting" && me?.status === "seated" ? (
+          {toActUid && !myTurn && (
+            <div className="mb-3 flex items-center gap-2">
+              <span className="h-2 w-2 shrink-0 animate-pulse rounded-full bg-gold-300" aria-hidden />
+              <p className="min-w-0 flex-1 truncate text-sm text-ivory-muted">
+                Waiting on <span className="font-semibold text-ivory">{firstName(toActUid)}</span>
+              </p>
+              {me && (
+                <Button
+                  variant="felt"
+                  className="h-8 shrink-0 px-3 text-xs"
+                  disabled={busy || nudgeCooling}
+                  onClick={() => setSheet("nudge")}
+                >
+                  {nudgeCooling ? "Nudged ✓" : "🐢 Nudge"}
+                </Button>
+              )}
+            </div>
+          )}
+
+          {myTurn && guided ? (
+            <GuidedControls key={guided.actionCount} state={guided.engine} uid={user.uid} busy={busy} onAct={onGuidedAct} />
+          ) : liveHand?.mode === "wallet" && liveHand.status === "betting" && me?.status === "seated" ? (
             <WalletControls
               stack={me.stack}
               inPot={liveHand.contributions[user.uid] ?? 0}
@@ -225,20 +333,25 @@ function RoomView({ room, players, openInvite }: { room: Room; players: PlayerDo
                     : "Tap an open seat to sit down."}
                 </p>
               </div>
-              {me && <span className="text-sm font-semibold text-gold-300 tabular-nums">{formatChips(me.stack)}</span>}
+              {me && <span className="text-sm font-semibold text-gold-300 tabular-nums">{formatChips(myStack)}</span>}
             </div>
           ) : (
             <div className="flex items-center gap-3">
               <div className="min-w-0 flex-1">
-                <p className="text-[11px] uppercase tracking-wider text-ivory-muted">Your stack</p>
-                <RollingNumber value={me.stack} className="text-gold text-2xl font-bold tabular-nums" />
+                <p className="text-[11px] uppercase tracking-wider text-ivory-muted">
+                  {myEngine?.folded ? "Your stack · folded" : myEngine?.allIn ? "Your stack · all-in" : "Your stack"}
+                </p>
+                <RollingNumber value={myStack} className="text-gold text-2xl font-bold tabular-nums" />
+                {myEngine && myEngine.totalIn > 0 && (
+                  <p className="text-xs text-ivory-muted tabular-nums">{formatChips(myEngine.totalIn)} in this hand</p>
+                )}
               </div>
-              <ChipPile amount={me.stack} size={22} />
+              <ChipPile amount={myStack} size={22} />
               <div className="flex flex-col gap-1.5">
                 <Button
                   variant="felt"
                   className="h-9"
-                  disabled={busy || (!!liveHand && me.status === "seated" && (liveHand.contributions[user.uid] ?? 0) > 0)}
+                  disabled={busy || lockedIn}
                   onClick={() =>
                     act("change your status", () => setSittingOut(db, room.id, user.uid, me.status === "seated"))
                   }
@@ -248,7 +361,7 @@ function RoomView({ room, players, openInvite }: { room: Room; players: PlayerDo
                 <Button
                   variant="ghost"
                   className="h-8 text-xs"
-                  disabled={busy}
+                  disabled={busy || lockedIn}
                   onClick={() => act("leave the table", () => leaveTable(db, room.id, user.uid, presence, Date.now()))}
                 >
                   Leave table
@@ -261,16 +374,41 @@ function RoomView({ room, players, openInvite }: { room: Room; players: PlayerDo
             <HostHandBar
               mode={room.settings.mode}
               hand={liveHand}
-              seatedCount={players.filter((p) => p.status === "seated" && p.seatIndex !== null).length}
-              voteDecided={!!vote && voteIsDecided(vote.openedAt?.toMillis() ?? now, vote.ballots, vote.voterUids, now)}
+              seatedCount={
+                players.filter(
+                  (p) =>
+                    p.status === "seated" && p.seatIndex !== null && (room.settings.mode === "wallet" || p.stack > 0),
+                ).length
+              }
+              voteDecided={votesDecided}
+              waitingOn={toActUid && !myTurn ? { name: firstName(toActUid), absent: toActAbsent } : null}
+              showdownHint={guided?.status === "showdown" && engine ? (streetBanner(engine)?.detail ?? null) : null}
               busy={busy}
-              onStart={() => act("start the hand", () => startWalletHand(db, room.id, user.uid))}
-              onShowdown={() => liveHand && act("open the vote", () => openWinnerVote(db, room.id, liveHand.id))}
+              onStart={() =>
+                act("start the hand", () =>
+                  room.settings.mode === "guided"
+                    ? startGuidedHand(db, room.id, user.uid)
+                    : startWalletHand(db, room.id, user.uid),
+                )
+              }
+              onShowdown={() =>
+                liveHand &&
+                act("open the vote", () =>
+                  liveHand.mode === "guided" ? openPotVotes(db, room.id, liveHand.id) : openWinnerVote(db, room.id, liveHand.id),
+                )
+              }
               onShowVote={() => setVoteMinimized(null)}
+              onFoldFor={() =>
+                guided &&
+                toActUid &&
+                act("fold for them", () =>
+                  takeAction(db, room.id, guided.id, toActUid, { type: "fold" }, guided.actionCount),
+                )
+              }
               onCancel={() => liveHand && act("call off the hand", () => cancelHand(db, room.id, liveHand.id))}
             />
           )}
-          {!isHost && liveHand?.status === "voting" && vote && !voteOpen && (
+          {!isHost && openVotes.length > 0 && !voteOpen && (
             <Button className="mt-3 w-full" onClick={() => setVoteMinimized(null)}>
               Back to the vote
             </Button>
@@ -296,21 +434,41 @@ function RoomView({ room, players, openInvite }: { room: Room; players: PlayerDo
         onKick={(uid) => act("remove that player", () => kickPlayer(db, room.id, uid))}
       />
       {isHost && <SettingsSheet open={sheet === "settings"} onClose={() => setSheet(null)} room={room} />}
-      {liveHand && vote && (
+      <NudgeSheet
+        open={sheet === "nudge" && !!toActUid}
+        onClose={() => setSheet(null)}
+        targetName={toActUid ? firstName(toActUid) : ""}
+        busy={busy}
+        onSend={onNudge}
+      />
+      {liveHand && potVotes.length > 0 && (
         <VoteSheet
           open={voteOpen && sheet === null}
-          onMinimize={() => setVoteMinimized(vote.id)}
+          onMinimize={() => setVoteMinimized(voteKey)}
           hand={liveHand}
-          vote={vote}
+          pots={potVotes}
           players={players}
           myUid={user.uid}
           hostUid={room.hostUid}
           busy={busy}
-          onCast={(winners) => act("vote", () => castBallot(db, room.id, vote.id, user.uid, winners))}
-          onAccept={(winners) => act("pay out", () => acceptVote(db, room.id, liveHand.id, vote.id, winners))}
-          onRedo={() => act("redo the vote", () => redoVote(db, room.id, liveHand.id, vote.id))}
+          onCast={(voteId, winners) => act("vote", () => castBallot(db, room.id, voteId, user.uid, winners))}
+          onAccept={(voteId, winners) =>
+            act("pay out", () =>
+              liveHand.mode === "guided"
+                ? acceptPotVote(db, room.id, liveHand.id, voteId, winners)
+                : acceptVote(db, room.id, liveHand.id, voteId, winners),
+            )
+          }
+          onRedo={(voteId) =>
+            act("redo the vote", () =>
+              liveHand.mode === "guided"
+                ? redoPotVote(db, room.id, liveHand.id, voteId)
+                : redoVote(db, room.id, liveHand.id, voteId),
+            )
+          }
         />
       )}
+      <NudgeToasts shown={nudgeToasts.shown} />
     </div>
   );
 }

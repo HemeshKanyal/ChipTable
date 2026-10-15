@@ -2,6 +2,6 @@
 // inside transactions. See lib/engine/*.test.ts for the rules it implements.
 export { applyAction, cardsToDeal, legalActions, potTotal, startHand, type StartHandInput } from "./betting";
 export { clockwiseFrom, nextButtonSeat } from "./button";
-export { computePots, contestedPots, handPots, settle } from "./pots";
+export { computePots, contestedPots, currentPots, handPots, settle } from "./pots";
 export { orderFromButton, splitPot } from "./split";
 export * from "./types";

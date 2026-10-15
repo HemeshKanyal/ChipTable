@@ -43,6 +43,28 @@ export function handPots(state: HandState): Pot[] {
 }
 
 /**
+ * The pots as they stand right now, for showing at the table. While betting, only all-in players
+ * cap a pot: anyone still betting can reach every level, so they're in every pot. Once betting is
+ * over this is the same as handPots.
+ */
+export function currentPots(state: HandState): Pot[] {
+  if (state.phase !== "betting") return handPots(state);
+  const live = state.players.filter((p) => !p.folded);
+  const caps = [...new Set(live.filter((p) => p.allIn).map((p) => p.totalIn))].sort((a, b) => a - b);
+  const pots: Pot[] = [];
+  let prev = 0;
+  for (const level of [...caps, Infinity]) {
+    const amount = state.players.reduce((sum, p) => sum + Math.max(0, Math.min(p.totalIn, level) - prev), 0);
+    const eligible = live.filter((p) => !p.allIn || p.totalIn >= level).map((p) => p.uid);
+    const last = pots[pots.length - 1];
+    if (amount > 0 && last && (eligible.length === 0 || sameSet(last.eligible, eligible))) last.amount += amount;
+    else if (amount > 0) pots.push({ amount, eligible: eligible.length ? eligible : live.map((p) => p.uid) });
+    prev = level;
+  }
+  return pots;
+}
+
+/**
  * Pays the hand out. Win by fold: everything to the last player. Showdown: `winnersByPot[i]`
  * are the winners of pot i (a split if several). A pot only one player can win may be left
  * empty and is awarded automatically. Odd chips in a split go to the first winner clockwise

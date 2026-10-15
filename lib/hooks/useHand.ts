@@ -1,7 +1,7 @@
 "use client";
 
 import { onSnapshot, type DocumentReference, type Firestore } from "firebase/firestore";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { getFirebase } from "@/lib/firebase/client";
 import { handRef, voteRef } from "@/lib/firebase/paths";
 import type { HandDoc, VoteDoc } from "@/lib/types";
@@ -34,6 +34,32 @@ export function useHand(roomId: string, handId: string | null): Hand | null {
   return useLiveDoc<Hand>(handId && `${roomId}/hands/${handId}`, (db) => handRef(db, roomId, handId!));
 }
 
-export function useVote(roomId: string, voteId: string | null): Vote | null {
-  return useLiveDoc<Vote>(voteId && `${roomId}/votes/${voteId}`, (db) => voteRef(db, roomId, voteId!));
+/**
+ * Live votes for the given ids (a wallet hand has one; a guided showdown one per contested pot).
+ * Index-aligned with `ids`; null while loading and for null ids.
+ */
+export function useVotes(roomId: string, ids: (string | null)[]): (Vote | null)[] {
+  const key = `${roomId}/${ids.join(",")}`;
+  const [state, setState] = useState<{ key: string; votes: Record<string, Vote | null> } | null>(null);
+  useEffect(() => {
+    const live = key.slice(roomId.length + 1).split(",").filter(Boolean);
+    const { db } = getFirebase();
+    const put = (id: string, vote: Vote | null) =>
+      setState((s) => ({ key, votes: { ...(s?.key === key ? s.votes : {}), [id]: vote } }));
+    const unsubs = live.map((id) =>
+      onSnapshot(
+        voteRef(db, roomId, id),
+        (snap) =>
+          put(id, snap.exists() ? ({ id: snap.id, ...snap.data({ serverTimestamps: "estimate" }) } as Vote) : null),
+        () => put(id, null),
+      ),
+    );
+    return () => unsubs.forEach((u) => u());
+  }, [key, roomId]);
+  return useMemo(
+    () => ids.map((id) => (id && state?.key === key ? (state.votes[id] ?? null) : null)),
+    // `ids` is rebuilt every render; `key` identifies it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [key, state],
+  );
 }

@@ -13,11 +13,63 @@ import { useNow } from "@/lib/hooks/useNow";
 import { tallyBallots, voteIsDecided, type Choice } from "@/lib/vote/tally";
 import type { PlayerDoc } from "@/lib/types";
 
+/** One pot up for a vote. Wallet hands have one; guided showdowns one per contested pot. */
+export interface PotVote {
+  vote: Vote;
+  /** "Main pot", "Side pot 1"; null when there's only one pot. */
+  label: string | null;
+  amount: number;
+}
+
 interface VoteSheetProps {
   open: boolean;
   onMinimize: () => void;
   hand: Hand;
+  pots: PotVote[];
+  players: PlayerDoc[];
+  myUid: string;
+  hostUid: string;
+  busy: boolean;
+  onCast: (voteId: string, winners: string[]) => Promise<unknown>;
+  onAccept: (voteId: string, winners: string[]) => Promise<unknown>;
+  onRedo: (voteId: string) => Promise<unknown>;
+}
+
+export function VoteSheet({ open, onMinimize, hand, pots, onCast, onAccept, onRedo, ...rest }: VoteSheetProps) {
+  return (
+    <BottomSheet open={open} onClose={onMinimize} title={`Who won hand #${hand.number}?`}>
+      <div className="flex flex-col gap-6">
+        {pots.length > 1 && (
+          <p className="-mt-2 text-xs text-ivory-muted">
+            There are {pots.length} pots. Vote on each one: only players who can win a pot are listed.
+          </p>
+        )}
+        {pots.map(({ vote, label, amount }) => (
+          <section key={vote.potIndex} className={pots.length > 1 ? "border-t gold-hairline pt-4 first:border-0 first:pt-0" : ""}>
+            {/* Keyed by vote so a re-vote starts with a clean selection. */}
+            <VoteBody
+              key={vote.id}
+              {...rest}
+              contributions={hand.contributions}
+              vote={vote}
+              label={label}
+              amount={amount}
+              onCast={(w) => onCast(vote.id, w)}
+              onAccept={(w) => onAccept(vote.id, w)}
+              onRedo={() => onRedo(vote.id)}
+            />
+          </section>
+        ))}
+      </div>
+    </BottomSheet>
+  );
+}
+
+interface VoteBodyProps {
   vote: Vote;
+  label: string | null;
+  amount: number;
+  contributions: Record<string, number>;
   players: PlayerDoc[];
   myUid: string;
   hostUid: string;
@@ -27,16 +79,8 @@ interface VoteSheetProps {
   onRedo: () => Promise<unknown>;
 }
 
-export function VoteSheet(props: VoteSheetProps) {
-  return (
-    <BottomSheet open={props.open} onClose={props.onMinimize} title={`Who won hand #${props.hand.number}?`}>
-      {/* Keyed by vote so a re-vote starts with a clean selection. */}
-      <VoteBody key={props.vote.id} {...props} />
-    </BottomSheet>
-  );
-}
-
-function VoteBody({ hand, vote, players, myUid, hostUid, busy, onCast, onAccept, onRedo }: VoteSheetProps) {
+function VoteBody(props: VoteBodyProps) {
+  const { vote, label: potLabel, amount, contributions, players, myUid, hostUid, busy, onCast, onAccept, onRedo } = props;
   const now = useNow(200);
   const byUid = useMemo(() => new Map(players.map((p) => [p.uid, p])), [players]);
   const name = (uid: string) => (uid === myUid ? "You" : (byUid.get(uid)?.displayName.split(" ")[0] ?? "Someone"));
@@ -56,13 +100,27 @@ function VoteBody({ hand, vote, players, myUid, hostUid, busy, onCast, onAccept,
   const toggle = (uid: string) =>
     setPicked((cur) => (cur.includes(uid) ? cur.filter((u) => u !== uid) : [...cur, uid]));
 
+  if (vote.status === "accepted" && vote.hostDecision) {
+    return (
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <p className="text-[11px] uppercase tracking-wider text-ivory-muted">{potLabel ?? "Pot"}</p>
+          <p className="text-gold text-2xl font-bold leading-none tabular-nums">{formatChips(amount)}</p>
+        </div>
+        <p className="flex items-center gap-1.5 text-sm font-semibold text-gold-200">
+          <CheckIcon size={16} /> {label(vote.hostDecision.winners)}
+        </p>
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-col gap-5">
       <div className="flex items-center gap-4">
         <CountdownRing remainingMs={decided ? 0 : remaining} totalMs={vote.durationMs} />
         <div className="min-w-0 flex-1">
-          <p className="text-[11px] uppercase tracking-wider text-ivory-muted">Pot</p>
-          <p className="text-gold text-3xl font-bold leading-none tabular-nums">{formatChips(hand.pot)}</p>
+          <p className="text-[11px] uppercase tracking-wider text-ivory-muted">{potLabel ?? "Pot"}</p>
+          <p className="text-gold text-3xl font-bold leading-none tabular-nums">{formatChips(amount)}</p>
           <p className="mt-1 text-xs text-ivory-muted">
             {votedCount} of {vote.voterUids.length} voted{vote.round > 1 ? ` · round ${vote.round}` : ""}
           </p>
@@ -91,7 +149,7 @@ function VoteBody({ hand, vote, players, myUid, hostUid, busy, onCast, onAccept,
                   <div className="min-w-0">
                     <p className="truncate text-sm font-semibold">{name(uid)}</p>
                     <p className="text-[11px] text-ivory-muted tabular-nums">
-                      {hand.contributions[uid] ? `put in ${formatChips(hand.contributions[uid])}` : "no chips in"}
+                      {contributions[uid] ? `put in ${formatChips(contributions[uid])}` : "no chips in"}
                     </p>
                   </div>
                   {selected && (
@@ -108,7 +166,7 @@ function VoteBody({ hand, vote, players, myUid, hostUid, busy, onCast, onAccept,
             <div className="flex flex-col gap-2">
               {picked.length > 1 && (
                 <p className="text-center text-xs text-gold-200">
-                  Split pot: about {formatChips(Math.floor(hand.pot / picked.length))} each
+                  Split pot: about {formatChips(Math.floor(amount / picked.length))} each
                 </p>
               )}
               <Button
