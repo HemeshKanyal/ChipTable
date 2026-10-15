@@ -7,7 +7,9 @@ import {
   type Firestore,
   type Transaction,
 } from "firebase/firestore";
-import { nextButtonSeat, orderFromButton, splitPot, winnerCandidates } from "@/lib/hand/wallet";
+import { nextButtonSeat } from "@/lib/engine/button";
+import { orderFromButton, splitPot } from "@/lib/engine/split";
+import { winnerCandidates } from "@/lib/hand/wallet";
 import { VOTE_DURATION_MS, tallyBallots } from "@/lib/vote/tally";
 import type { HandDoc, PlayerDoc, RoomDoc, VoteDoc } from "@/lib/types";
 import { handRef, handsCol, playerRef, roomRef, voteRef, votesCol } from "./paths";

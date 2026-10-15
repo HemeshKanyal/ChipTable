@@ -1,3 +1,7 @@
+import { clockwiseFrom } from "@/lib/engine/button";
+
+export { clockwiseFrom };
+
 export type PlayerStatus = "seated" | "sittingOut" | "left";
 
 /** room.seats: seat index (as a string key) → uid. */
@@ -26,10 +30,6 @@ export function firstFreeSeat(seats: SeatMap, maxPlayers: number): number | null
   return null;
 }
 
-/** Seat indices after `from`, wrapping, i.e. clockwise around the table. `from` comes last. */
-export function clockwiseFrom(from: number, maxPlayers: number): number[] {
-  return Array.from({ length: maxPlayers }, (_, i) => (from + 1 + i) % maxPlayers);
-}
 
 export function hostIsAway(host: PresencePlayer | undefined, now: number): boolean {
   return !host || host.status === "left" || host.lastSeen === null || now - host.lastSeen > HOST_TIMEOUT_MS;

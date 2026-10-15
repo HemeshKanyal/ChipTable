@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { choiceKey, tallyBallots, voteIsDecided, VOTE_DURATION_MS } from "../vote/tally";
-import { nextButtonSeat, orderFromButton, splitPot, winnerCandidates } from "./wallet";
+import { nextButtonSeat } from "../engine/button";
+import { orderFromButton, splitPot } from "../engine/split";
+import { winnerCandidates } from "./wallet";
 
 describe("nextButtonSeat", () => {
   it("starts at the lowest occupied seat", () => {

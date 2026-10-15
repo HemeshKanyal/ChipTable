@@ -76,16 +76,33 @@ lib/chips.ts         chip denominations and amount → chip breakdown
 lib/room/            pure room logic: codes, settings validation, seating, host succession
 lib/hooks/           live Firestore subscriptions (room, My Rooms, presence)
 tests/rules/         Security Rules tests against the emulator
-lib/engine/          (Phase 4) pure game logic
+lib/engine/          pure guided-mode game logic (see "Game engine" below)
 firestore.rules      Security Rules
 ```
+
+## Game engine
+
+`lib/engine/` is plain TypeScript with no Firebase or React. `startHand` posts the blinds, and `applyAction` takes a state and an action and returns the next state (it never mutates). `legalActions` tells the UI what the player to act may do, and `settle` pays out. The state is plain data, so it can be stored on the hand document as-is.
+
+Rules it implements:
+
+- **Blinds:** small and big blind left of the button. Heads-up, the button posts the small blind and acts first preflop, last after. Short stacks post what they have and are all-in; others still have to match the full big blind, and any over-call comes back.
+- **Turn order:** preflop starts left of the big blind (who keeps their option). After the flop, action starts with the first live player left of the button. Folded and all-in players are skipped.
+- **Raises:** a raise must be at least the last full bet or raise on that street (minimum bet is one big blind). A smaller raise is allowed only as an all-in and doesn't let players who already acted re-raise, unless several short all-ins together add up to a full raise (TDA rule). Nobody can raise when no one left could call.
+- **Uncalled bets** go back to the bettor when the round ends.
+- **Early showdown:** when at most one player can still bet, betting stops and `cardsToDeal` says what the dealer must still put out.
+- **Side pots:** a pot is capped at each all-in level, with its own eligible players. Folded chips stay in; pots with the same players merge. A pot only one player can win is paid automatically.
+- **Splits:** even shares, odd chips to the first winner clockwise from the button.
+- **Not modelled:** dead button and missed-blind rules (the button always moves to the next player dealt in), antes, and straddles.
+
+Tests: `lib/engine/*.test.ts`, including heads-up, multi-way all-in side pots, and a randomised test that plays 3,000 random hands and checks that chips are conserved, the right player always acts, every hand ends, and payouts equal the pot.
 
 ## Build phases
 
 - [x] **1. Foundation**: setup, theme tokens, Firebase + emulators, Google sign-in, users collection, felt layout
 - [x] **2. Rooms**: create with settings, join by code/link/QR (+ password), My Rooms, seating, presence, host transfer
 - [x] **3. Wallet mode**: start a hand, chip buttons + custom bets, live feed, 30s winner vote (split pots), host accept / redo / call off, payout animation
-- [ ] 4. Engine
+- [x] **4. Engine**: pure No-Limit Hold'em betting engine in `lib/engine/` with Vitest tests (blinds incl. heads-up, button rotation, turn order, min-raise, incomplete all-ins, side pots, settlement)
 - [ ] 5. Guided mode UI
 - [ ] 6. Rebuys, reset vote, history, leaderboard, seasons
 - [ ] 7. Polish
