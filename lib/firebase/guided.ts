@@ -29,7 +29,7 @@ async function readParticipants(tx: Transaction, db: Firestore, roomId: string, 
   return snaps.map((s) => s.data() as PlayerDoc);
 }
 
-/** Moves each stack by what the hand did to it: payout − chips put in. */
+/** Moves each stack by what the hand did to it: payout − chips put in. Returns the new stacks. */
 function writeStacks(
   tx: Transaction,
   db: Firestore,
@@ -37,12 +37,15 @@ function writeStacks(
   players: PlayerDoc[],
   state: HandState,
   payouts: Record<string, number>,
-) {
+): Record<string, number> {
+  const after: Record<string, number> = {};
   for (const p of players) {
     const totalIn = state.players.find((x) => x.uid === p.uid)?.totalIn ?? 0;
     const delta = (payouts[p.uid] ?? 0) - totalIn;
+    after[p.uid] = p.stack + delta;
     if (delta !== 0) tx.update(playerRef(db, roomId, p.uid), { stack: p.stack + delta });
   }
+  return after;
 }
 
 const seatsOf = (state: HandState, uids: string[]) =>
@@ -80,6 +83,7 @@ export async function startGuidedHand(db: Firestore, roomId: string, hostUid: st
     const number = (room.handCount ?? 0) + 1;
     tx.set(hand, {
       number,
+      seasonId: room.seasonId,
       mode: "guided",
       ...guidedFields(state),
       buttonSeat,
@@ -143,11 +147,11 @@ export async function takeAction(
 
     // Everyone else folded: no vote, the last player takes it all.
     const payouts = settle(next);
-    writeStacks(tx, db, roomId, players, next, payouts);
+    const stacksAfter = writeStacks(tx, db, roomId, players, next, payouts);
     tx.update(handRef(db, roomId, handId), {
       ...update,
       endedAt: serverTimestamp(),
-      result: { winners: [next.winnerByFold], payouts, decidedBy: "fold", tally: {}, voteRounds: 0 },
+      result: { winners: [next.winnerByFold], payouts, decidedBy: "fold", tally: {}, voteRounds: 0, stacksAfter },
     });
     tx.update(roomRef(db, roomId), { currentHandId: null, lastHandId: handId, lastActiveAt: serverTimestamp() });
   });
@@ -243,7 +247,7 @@ export async function acceptPotVote(
       tally: votes[i] ? tallyMap(votes[i]!.ballots) : {},
       voteRounds: votes[i]?.round ?? 0,
     }));
-    writeStacks(tx, db, roomId, players, hand.engine, paid);
+    const stacksAfter = writeStacks(tx, db, roomId, players, hand.engine, paid);
     tx.update(handRef(db, roomId, handId), {
       status: "complete",
       endedAt: serverTimestamp(),
@@ -254,6 +258,7 @@ export async function acceptPotVote(
         tally: pots[0].tally,
         voteRounds: Math.max(...pots.map((p) => p.voteRounds)),
         pots,
+        stacksAfter,
       },
     });
     tx.update(roomRef(db, roomId), { currentHandId: null, lastHandId: handId, lastActiveAt: serverTimestamp() });

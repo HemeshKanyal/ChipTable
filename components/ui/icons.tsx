@@ -19,6 +19,13 @@ function Svg({ size = 20, className, children }: IconProps & { children: React.R
   );
 }
 
+export const HistoryIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M3 12a9 9 0 1 0 3-6.7L3 8" />
+    <path d="M3 3v5h5M12 7v5l3 2" />
+  </Svg>
+);
+
 export const ArrowLeftIcon = (p: IconProps) => (
   <Svg {...p}>
     <path d="M19 12H5M12 19l-7-7 7-7" />

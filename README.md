@@ -51,6 +51,12 @@ Guided mode runs real No-Limit Hold'em betting; the cards stay on the table.
 
 During a guided hand, stacks shown at the table are live; the stored stacks settle when the hand ends.
 
+### Rebuys, resets and history
+
+- **Rebuy:** tap **+ Rebuy** under your stack and ask for an amount. The host gets an Approve / Deny prompt under the table; approved chips land straight on your stack and count against you on the leaderboard.
+- **Reset the room:** anyone at the table can open **Players → Propose a room reset** between hands. Everyone votes for 30 seconds; with yes from more than half the table, the host confirms. Every stack goes back to the starting amount and a new season begins. The old season is archived, not deleted.
+- **History** (clock icon in the room header): per-season **Leaderboard** (stack, net = stack − starting stack − rebuys, hands won, biggest pot, win rate), **Sessions** (each evening of play, hands less than 3 hours apart, with a stack timeline), and **Hands** (every hand; tap one for its full action log, pots, votes and stacks).
+
 ### Testing from a phone on your Wi-Fi
 
 1. Find your computer's LAN IP (e.g. `192.168.1.20`).
@@ -94,6 +100,9 @@ lib/hooks/           live Firestore subscriptions (room, My Rooms, presence)
 tests/rules/         Security Rules tests against the emulator
 lib/engine/          pure guided-mode game logic (see "Game engine" below)
 lib/hand/            pure glue between the engine and the hand doc / UI (banners, raise sizes, nudges)
+lib/stats/           pure leaderboard, session and stack-timeline maths over a season's hands
+lib/firebase/rebuys.ts, seasons.ts  rebuy requests; reset vote, season archive and reset
+components/history/  the History screen (/room/[id]/history)
 lib/firebase/guided.ts  guided hands: deal, act, per-pot votes, settle, nudges (Firestore transactions)
 firestore.rules      Security Rules
 ```
@@ -124,5 +133,5 @@ Tests: `lib/engine/*.test.ts`, including heads-up, multi-way all-in side pots, a
 - [x] **3. Wallet mode**: start a hand, chip buttons + custom bets, live feed, 30s winner vote (split pots), host accept / redo / call off, payout animation
 - [x] **4. Engine**: pure No-Limit Hold'em betting engine in `lib/engine/` with Vitest tests (blinds incl. heads-up, button rotation, turn order, min-raise, incomplete all-ins, side pots, settlement)
 - [x] **5. Guided mode UI**: deal with auto blinds, turn-enforced Fold/Check/Call/Bet/Raise (slider + min/½/¾/pot/all-in), street and run-out banners, live side pots, a vote per pot, instant win on fold-out, host fold-for-absent, nudges
-- [ ] 6. Rebuys, reset vote, history, leaderboard, seasons
+- [x] **6. Rebuys, reset vote, history, leaderboard, seasons**: host-approved rebuys, 30s room-reset vote that archives the season, per-season leaderboard, sessions with stack timelines, hand review with full action log
 - [ ] 7. Polish

@@ -18,9 +18,21 @@ interface PlayersSheetProps {
   now: number;
   onMakeHost: (uid: string) => Promise<unknown>;
   onKick: (uid: string) => Promise<unknown>;
+  /** Present when I can propose a room reset (at the table, between hands, none open). */
+  onProposeReset?: () => Promise<unknown>;
 }
 
-export function PlayersSheet({ open, onClose, players, hostUid, myUid, now, onMakeHost, onKick }: PlayersSheetProps) {
+export function PlayersSheet({
+  open,
+  onClose,
+  players,
+  hostUid,
+  myUid,
+  now,
+  onMakeHost,
+  onKick,
+  onProposeReset,
+}: PlayersSheetProps) {
   const [confirmKick, setConfirmKick] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const iAmHost = hostUid === myUid;
@@ -125,6 +137,20 @@ export function PlayersSheet({ open, onClose, players, hostUid, myUid, now, onMa
         <p className="mt-4 text-xs text-ivory-muted">
           Removed players keep their chips and can rejoin with the code.
         </p>
+      )}
+      {onProposeReset && (
+        <div className="mt-5 border-t gold-hairline pt-4">
+          <button
+            type="button"
+            onClick={onProposeReset}
+            className="h-10 w-full rounded-xl border border-danger/40 text-sm font-semibold text-danger hover:bg-danger/10"
+          >
+            Propose a room reset
+          </button>
+          <p className="mt-2 text-xs text-ivory-muted">
+            Everyone back to the starting stack, as a new season. The table votes; the history stays.
+          </p>
+        </div>
       )}
     </BottomSheet>
   );

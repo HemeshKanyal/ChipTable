@@ -46,6 +46,25 @@ service cloud.firestore {
       return /databases/$(database)/documents/rooms/$(roomId)/votes/$(voteId);
     }
 
+    function requestPath(roomId, requestId) {
+      return /databases/$(database)/documents/rooms/$(roomId)/requests/$(requestId);
+    }
+
+    function seasonPath(roomId, seasonId) {
+      return /databases/$(database)/documents/rooms/$(roomId)/seasons/$(seasonId);
+    }
+
+    // Reset votes: yes ballots among the (at most 10) voters. Mirrors tallyReset() in lib/vote/reset.ts.
+    function yesAt(v, i) {
+      return v.voterUids.size() > i && v.ballots.get(v.voterUids[i], []) == ['yes'] ? 1 : 0;
+    }
+
+    function resetPassed(v) {
+      let yes = yesAt(v, 0) + yesAt(v, 1) + yesAt(v, 2) + yesAt(v, 3) + yesAt(v, 4)
+        + yesAt(v, 5) + yesAt(v, 6) + yesAt(v, 7) + yesAt(v, 8) + yesAt(v, 9);
+      return yes * 2 > v.voterUids.size();
+    }
+
     // The room's hand in progress (before this write). Points nowhere when there isn't one.
     function currentHandPath(roomId) {
       return handPath(roomId, get(roomPath(roomId)).data.get('currentHandId', '-'));
@@ -235,6 +254,33 @@ service cloud.firestore {
           && h.result.decidedBy == 'fold';
       }
 
+      // The reset-vote pointer moves on to a newly opened reset vote, or off a closed one.
+      function resetPointerOk() {
+        let before = resource.data.get('resetVoteId', null);
+        let after = request.resource.data.resetVoteId;
+        return (before == null || getAfter(votePath(roomId, before)).data.status != 'open')
+          && (after == null
+              || (after is string
+                  && !exists(votePath(roomId, after))
+                  && getAfter(votePath(roomId, after)).data.type == 'reset'
+                  && getAfter(votePath(roomId, after)).data.status == 'open'));
+      }
+
+      // Host confirms a passed reset: new season, outgoing one archived, no hand running.
+      function resetOk() {
+        let voteId = resource.data.get('resetVoteId', null);
+        let old = resource.data.seasonId;
+        return voteId != null
+          && resource.data.get('currentHandId', null) == null
+          && resetPassed(get(votePath(roomId, voteId)).data)
+          && getAfter(votePath(roomId, voteId)).data.status == 'accepted'
+          && request.resource.data.seasonId is string
+          && request.resource.data.seasonId != old
+          && request.resource.data.seasonStartedAt == request.time
+          && !exists(seasonPath(roomId, old))
+          && existsAfter(seasonPath(roomId, old));
+      }
+
       function newHostOk() {
         return getAfter(playerPath(roomId, request.resource.data.hostUid)).data.status in ['seated', 'sittingOut'];
       }
@@ -267,19 +313,23 @@ service cloud.firestore {
         (resource.data.hostUid == me()
           && changed().hasOnly([
                'name', 'settings', 'seats', 'hostUid', 'hasPassword', 'lastActiveAt',
-               'currentHandId', 'lastHandId', 'handCount', 'buttonSeat'])
+               'currentHandId', 'lastHandId', 'handCount', 'buttonSeat',
+               'resetVoteId', 'seasonId', 'seasonStartedAt'])
           && validName(request.resource.data.name)
           && validSettings(request.resource.data.settings)
           && request.resource.data.hasPassword is bool
           && (!changed().hasAny(['settings']) || resource.data.get('currentHandId', null) == null)
           && (!changed().hasAny(['currentHandId']) || handPointerOk())
-          && (!changed().hasAny(['hostUid']) || newHostOk()))
+          && (!changed().hasAny(['hostUid']) || newHostOk())
+          && (!changed().hasAny(['resetVoteId']) || resetPointerOk())
+          && (!changed().hasAny(['seasonId', 'seasonStartedAt']) || resetOk()))
         ||
-        // Members: their own seat, and taking over from an absent host.
+        // Members: their own seat, taking over from an absent host, opening or closing a reset vote.
         (isMember(roomId)
-          && changed().hasOnly(['seats', 'hostUid', 'lastActiveAt'])
+          && changed().hasOnly(['seats', 'hostUid', 'lastActiveAt', 'resetVoteId'])
           && (!changed().hasAny(['seats']) || seatChangeOk())
-          && (!changed().hasAny(['hostUid']) || takeoverOk()))
+          && (!changed().hasAny(['hostUid']) || takeoverOk())
+          && (!changed().hasAny(['resetVoteId']) || resetPointerOk()))
         ||
         // Members: closing a guided hand their fold just ended.
         (isMember(roomId)
@@ -361,6 +411,26 @@ service cloud.firestore {
                  - after.contributions.get(uid, 0) + after.result.payouts.get(uid, 0);
         }
 
+        // Host approves a rebuy: stack and season rebuys grow by exactly the request's amount.
+        function rebuyOk() {
+          let r = requestPath(roomId, request.resource.data.lastRebuyId);
+          let req = get(r).data;
+          return req.uid == uid
+            && req.status == 'pending'
+            && getAfter(r).data.status == 'approved'
+            && req.seasonId == get(roomPath(roomId)).data.seasonId
+            && request.resource.data.stack == resource.data.stack + req.amount
+            && request.resource.data.totalRebuys == resource.data.totalRebuys + req.amount;
+        }
+
+        // Host resets the room: back to the starting stack, no rebuys, in the new season's write.
+        function seasonResetOk() {
+          let after = getAfter(roomPath(roomId)).data;
+          return after.seasonId != get(roomPath(roomId)).data.seasonId
+            && request.resource.data.stack == after.settings.startingStack
+            && request.resource.data.totalRebuys == 0;
+        }
+
         allow read: if isMember(roomId) || (signedIn() && me() == uid);
 
         allow create: if signedIn() && me() == uid
@@ -406,6 +476,14 @@ service cloud.firestore {
           (isMember(roomId)
             && changed().hasOnly(['stack'])
             && guidedSettleOk())
+          ||
+          (isHost(roomId)
+            && changed().hasOnly(['stack', 'totalRebuys', 'lastRebuyId'])
+            && rebuyOk())
+          ||
+          (isHost(roomId)
+            && changed().hasOnly(['stack', 'totalRebuys'])
+            && seasonResetOk())
         );
 
         allow delete: if false;
@@ -463,7 +541,7 @@ service cloud.firestore {
             && a.status in ['complete', 'cancelled']
             && changed().hasOnly(['status', 'result', 'endedAt'])
             && a.endedAt == request.time
-            && a.result.keys().hasOnly(['winners', 'payouts', 'decidedBy', 'tally', 'voteRounds'])
+            && a.result.keys().hasOnly(['winners', 'payouts', 'decidedBy', 'tally', 'voteRounds', 'stacksAfter'])
             && allNonNegative10(p.values())
             && sum10(p.values()) == b.pot
             && getAfter(roomPath(roomId)).data.currentHandId == null
@@ -521,7 +599,7 @@ service cloud.firestore {
           let w = a.result.winners;
           return a.lastAction.type == 'fold'
             && a.endedAt == request.time
-            && a.result.keys().hasOnly(['winners', 'payouts', 'decidedBy', 'tally', 'voteRounds'])
+            && a.result.keys().hasOnly(['winners', 'payouts', 'decidedBy', 'tally', 'voteRounds', 'stacksAfter'])
             && a.result.decidedBy == 'fold'
             && w.size() == 1
             && a.result.payouts.keys().hasOnly(w)
@@ -558,7 +636,7 @@ service cloud.firestore {
           return b.mode == 'guided'
             && changed().hasOnly(['status', 'result', 'endedAt'])
             && a.endedAt == request.time
-            && a.result.keys().hasOnly(['winners', 'payouts', 'decidedBy', 'tally', 'voteRounds', 'pots'])
+            && a.result.keys().hasOnly(['winners', 'payouts', 'decidedBy', 'tally', 'voteRounds', 'pots', 'stacksAfter'])
             && allNonNegative10(p.values())
             && sum10(p.values()) == b.pot
             && getAfter(roomPath(roomId)).data.currentHandId == null
@@ -575,7 +653,7 @@ service cloud.firestore {
         function walletCreateOk() {
           let a = request.resource.data;
           return a.keys().hasOnly([
-               'number', 'mode', 'status', 'buttonSeat', 'pot', 'contributions', 'actions',
+               'number', 'seasonId', 'mode', 'status', 'buttonSeat', 'pot', 'contributions', 'actions',
                'participants', 'voteId', 'startedBy', 'startedAt', 'endedAt', 'result'])
             && a.mode == 'wallet'
             && a.status == 'betting'
@@ -590,7 +668,7 @@ service cloud.firestore {
           let a = request.resource.data;
           let s = getAfter(roomPath(roomId)).data.settings;
           return a.keys().hasOnly([
-               'number', 'mode', 'status', 'buttonSeat', 'pot', 'contributions', 'participants',
+               'number', 'seasonId', 'mode', 'status', 'buttonSeat', 'pot', 'contributions', 'participants',
                'engine', 'toActUid', 'street', 'pots', 'voteIds', 'actionCount', 'lastAction',
                'startedBy', 'startedAt', 'endedAt', 'result'])
             && a.mode == 'guided'
@@ -618,6 +696,7 @@ service cloud.firestore {
           && request.resource.data.startedBy == me()
           && request.resource.data.startedAt == request.time
           && request.resource.data.number == getAfter(roomPath(roomId)).data.handCount
+          && request.resource.data.seasonId == getAfter(roomPath(roomId)).data.seasonId
           && getAfter(roomPath(roomId)).data.currentHandId == handId
           && (walletCreateOk() || guidedCreateOk());
 
@@ -646,7 +725,52 @@ service cloud.firestore {
             && request.resource.data.ballots.diff(resource.data.ballots).affectedKeys().hasOnly([me()])
             && mine is list
             && mine.size() >= 1
+            && (resource.data.type != 'reset' || mine.size() == 1)
             && mine.hasOnly(resource.data.candidates);
+        }
+
+        // Anyone at the table proposes a reset (counting as their yes), between hands only.
+        function resetCreateOk() {
+          let v = request.resource.data;
+          let room = getAfter(roomPath(roomId)).data;
+          return isMember(roomId)
+            && v.keys().hasOnly([
+                 'type', 'proposedBy', 'openedAt', 'durationMs', 'candidates', 'voterUids',
+                 'ballots', 'status', 'closedAt'])
+            && v.type == 'reset'
+            && v.proposedBy == me()
+            && v.openedAt == request.time
+            && v.durationMs == 30000
+            && v.candidates == ['yes', 'no']
+            && v.voterUids is list
+            && v.voterUids.size() >= 1
+            && v.voterUids.size() <= 10
+            && me() in v.voterUids
+            && me() in room.seats.values()
+            && v.ballots.keys().hasOnly([me()])
+            && v.ballots[me()] == ['yes']
+            && v.status == 'open'
+            && v.closedAt == null
+            && room.resetVoteId == voteId
+            && room.get('currentHandId', null) == null;
+        }
+
+        // Reset votes close with the room's pointer moving off them. The host accepts only a
+        // passed vote, in the write that starts the new season; anyone closes one that can't pass.
+        function resetCloseOk() {
+          let a = request.resource.data;
+          let v = resource.data;
+          return changed().hasOnly(['status', 'closedAt'])
+            && a.closedAt == request.time
+            && getAfter(roomPath(roomId)).data.resetVoteId != voteId
+            && ((a.status == 'accepted'
+                 && isHost(roomId)
+                 && resetPassed(v)
+                 && getAfter(roomPath(roomId)).data.seasonId != get(roomPath(roomId)).data.seasonId)
+                || (a.status == 'failed'
+                    && !resetPassed(v)
+                    && (request.time >= voteEnd() || v.ballots.keys().hasAll(v.voterUids)))
+                || (a.status == 'cancelled' && isHost(roomId)));
         }
 
         // The hand points at this new vote. Wallet: its one vote. Guided: the vote for pot
@@ -666,7 +790,8 @@ service cloud.firestore {
         // Host may accept only once time is up or everyone has voted. Redo/cancel any time.
         function closeOk() {
           let a = request.resource.data;
-          return changed().hasOnly(['status', 'hostDecision', 'closedAt'])
+          return resource.data.type == 'winner'
+            && changed().hasOnly(['status', 'hostDecision', 'closedAt'])
             && a.closedAt == request.time
             && (a.status in ['redone', 'cancelled']
                 || (a.status == 'accepted'
@@ -678,7 +803,7 @@ service cloud.firestore {
 
         allow read: if isMember(roomId);
 
-        allow create: if isHost(roomId)
+        allow create: if resetCreateOk() || (isHost(roomId)
           && request.resource.data.keys().hasOnly([
                'type', 'handId', 'potIndex', 'round', 'openedAt', 'durationMs', 'candidates',
                'voterUids', 'ballots', 'status', 'hostDecision', 'closedAt'])
@@ -695,13 +820,61 @@ service cloud.firestore {
           && request.resource.data.candidates.size() >= 1
           && request.resource.data.candidates.size() <= 10
           && request.resource.data.voterUids is list
-          && request.resource.data.voterUids.size() <= 10;
+          && request.resource.data.voterUids.size() <= 10);
 
         allow update: if isMember(roomId)
           && resource.data.status == 'open'
-          && (ballotOk() || (isHost(roomId) && closeOk()));
+          && (ballotOk()
+              || (isHost(roomId) && closeOk())
+              || (resource.data.type == 'reset' && resetCloseOk()));
 
         allow delete: if false;
+      }
+
+      // ---------------------------------------------------------- rebuy requests
+
+      match /requests/{requestId} {
+        allow read: if isMember(roomId);
+
+        allow create: if isMember(roomId)
+          && request.resource.data.keys().hasOnly(['uid', 'amount', 'seasonId', 'status', 'createdAt', 'decidedAt'])
+          && request.resource.data.uid == me()
+          && exists(playerPath(roomId, me()))
+          && request.resource.data.amount is int
+          && request.resource.data.amount >= 1
+          && request.resource.data.amount <= 1000000
+          && request.resource.data.seasonId == get(roomPath(roomId)).data.seasonId
+          && request.resource.data.status == 'pending'
+          && request.resource.data.createdAt == request.time
+          && request.resource.data.decidedAt == null;
+
+        // The requester can cancel; the host denies, or approves in the same write that pays it.
+        allow update: if isMember(roomId)
+          && resource.data.status == 'pending'
+          && changed().hasOnly(['status', 'decidedAt'])
+          && request.resource.data.decidedAt == request.time
+          && ((request.resource.data.status == 'cancelled' && me() == resource.data.uid)
+              || (request.resource.data.status == 'denied' && isHost(roomId))
+              || (request.resource.data.status == 'approved'
+                  && isHost(roomId)
+                  && getAfter(playerPath(roomId, resource.data.uid)).data.lastRebuyId == requestId));
+
+        allow delete: if false;
+      }
+
+      // ---------------------------------------------------------- seasons (archive)
+
+      // Written once, by the host, as the room resets into a new season.
+      match /seasons/{seasonId} {
+        allow read: if isMember(roomId);
+        allow create: if isHost(roomId)
+          && seasonId == get(roomPath(roomId)).data.seasonId
+          && getAfter(roomPath(roomId)).data.seasonId != seasonId
+          && request.resource.data.keys().hasOnly([
+               'number', 'startedAt', 'endedAt', 'startingStack', 'finalStacks', 'resetVoteId'])
+          && request.resource.data.endedAt == request.time
+          && request.resource.data.resetVoteId == get(roomPath(roomId)).data.resetVoteId;
+        allow update, delete: if false;
       }
 
       // ---------------------------------------------------------- nudges

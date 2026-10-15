@@ -60,6 +60,7 @@ export async function startWalletHand(db: Firestore, roomId: string, hostUid: st
     const number = (room.handCount ?? 0) + 1;
     tx.set(hand, {
       number,
+      seasonId: room.seasonId,
       mode: "wallet",
       status: "betting",
       buttonSeat,
@@ -172,8 +173,11 @@ export async function acceptVote(
       throw new RoomError("denied", "Pick winners from the players in this hand.");
     }
 
-    const winnerSnaps = await Promise.all(winners.map((uid) => tx.get(playerRef(db, roomId, uid))));
-    const winnerDocs = winnerSnaps.map((s) => s.data() as PlayerDoc);
+    // Everyone involved, so the result can record every stack afterwards.
+    const involved = [...new Set([...winnerCandidates(hand.participants, hand.contributions), ...winners])];
+    const snaps = await Promise.all(involved.map((uid) => tx.get(playerRef(db, roomId, uid))));
+    const docs = new Map(snaps.map((s) => [s.id, s.data() as PlayerDoc]));
+    const winnerDocs = winners.map((uid) => docs.get(uid)!);
     const ordered = orderFromButton(
       winnerDocs.map((p) => ({ uid: p.uid, seatIndex: p.seatIndex })),
       hand.buttonSeat,
@@ -181,6 +185,8 @@ export async function acceptVote(
     );
     payouts = splitPot(hand.pot, ordered);
     const tally = Object.fromEntries(tallyBallots(vote.ballots).choices.map((c) => [c.key, c.count]));
+    const stacksAfter: Record<string, number> = {};
+    for (const [uid, p] of docs) if (p) stacksAfter[uid] = p.stack + (payouts[uid] ?? 0);
 
     for (const p of winnerDocs) {
       if (payouts[p.uid] > 0) tx.update(playerRef(db, roomId, p.uid), { stack: p.stack + payouts[p.uid] });
@@ -188,7 +194,7 @@ export async function acceptVote(
     tx.update(handRef(db, roomId, handId), {
       status: "complete",
       endedAt: serverTimestamp(),
-      result: { winners: ordered, payouts, decidedBy: "vote", tally, voteRounds: vote.round },
+      result: { winners: ordered, payouts, decidedBy: "vote", tally, voteRounds: vote.round, stacksAfter },
     });
     tx.update(voteRef(db, roomId, voteId), {
       status: "accepted",

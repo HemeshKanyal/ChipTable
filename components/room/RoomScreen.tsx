@@ -8,7 +8,7 @@ import { LoadingScreen } from "@/components/layout/LoadingScreen";
 import { Button } from "@/components/ui/Button";
 import { ChipPile } from "@/components/ui/ChipPile";
 import { RollingNumber } from "@/components/ui/RollingNumber";
-import { ArrowLeftIcon, SettingsIcon, ShareIcon, UsersIcon } from "@/components/ui/icons";
+import { ArrowLeftIcon, HistoryIcon, SettingsIcon, ShareIcon, UsersIcon } from "@/components/ui/icons";
 import { useToast } from "@/components/ui/Toast";
 import { formatChips } from "@/lib/chips";
 import type { PlayerAction } from "@/lib/engine";
@@ -40,7 +40,11 @@ import {
   startGuidedHand,
   takeAction,
 } from "@/lib/firebase/guided";
+import { cancelRebuy, decideRebuy, requestRebuy } from "@/lib/firebase/rebuys";
+import { cancelReset, closeFailedReset, confirmReset, proposeReset } from "@/lib/firebase/seasons";
 import { NUDGE_COOLDOWN_MS, streetBanner } from "@/lib/hand/guided";
+import { usePendingRebuys, useResetVote } from "@/lib/hooks/useHistory";
+import { tallyReset } from "@/lib/vote/reset";
 import { useHand, useVotes } from "@/lib/hooks/useHand";
 import { useNow } from "@/lib/hooks/useNow";
 import { useNudges } from "@/lib/hooks/useNudges";
@@ -55,6 +59,8 @@ import { InviteSheet } from "./InviteSheet";
 import { NudgeSheet, NudgeToasts, useNudgeToasts } from "./Nudges";
 import { PlayersSheet } from "./PlayersSheet";
 import { PokerTable } from "./PokerTable";
+import { RebuyRequests, RebuySheet } from "./Rebuys";
+import { ResetVoteSheet } from "./ResetVoteSheet";
 import { SettingsSheet } from "./SettingsSheet";
 import { VoteSheet, type PotVote } from "./VoteSheet";
 import { WalletControls } from "./WalletControls";
@@ -93,7 +99,7 @@ function Message({ title, children }: { title: string; children: React.ReactNode
   );
 }
 
-type Sheet = "invite" | "players" | "settings" | "nudge" | null;
+type Sheet = "invite" | "players" | "settings" | "nudge" | "rebuy" | null;
 
 function RoomView({ room, players, openInvite }: { room: Room; players: PlayerDoc[]; openInvite: boolean }) {
   const user = useSignedInUser();
@@ -154,6 +160,31 @@ function RoomView({ room, players, openInvite }: { room: Room; players: PlayerDo
 
   usePresence(room.id, user.uid, !!me);
   useHostWatch(room.id, room.hostUid, room.settings.maxPlayers, presence, user.uid, now);
+
+  // Rebuys: mine waiting on the host, and (for the host) everyone's.
+  const pendingRebuys = usePendingRebuys(room.id);
+  const myRebuy = pendingRebuys.find((r) => r.uid === user.uid) ?? null;
+  const seenRequests = useRef<Set<string> | null>(null);
+  useEffect(() => {
+    const ids = new Set(pendingRebuys.map((r) => r.id));
+    const seen = seenRequests.current;
+    seenRequests.current = ids;
+    if (!isHost || !seen) return;
+    for (const r of pendingRebuys) {
+      if (!seen.has(r.id) && r.uid !== user.uid) toast(`${firstName(r.uid)} asks for ${formatChips(r.amount)} chips`);
+    }
+    // firstName reads `players`; announcing only needs the request list to change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingRebuys, isHost, user.uid, toast]);
+
+  // Room reset vote.
+  const resetVote = useResetVote(room.id, room.resetVoteId ?? null);
+  const [resetMinimized, setResetMinimized] = useState<string | null>(null);
+  const resetOpen = resetVote?.status === "open" ? resetVote : null;
+  const resetStuck =
+    !!resetOpen &&
+    tallyReset(resetOpen.ballots, resetOpen.voterUids, resetOpen.openedAt?.toMillis() ?? now, now).failed;
+  const canProposeReset = me?.seatIndex != null && !room.currentHandId && (!resetOpen || resetStuck);
 
   // Nudges aimed at me, and my own cooldown for sending them.
   const nudgeToasts = useNudgeToasts();
@@ -253,6 +284,13 @@ function RoomView({ room, players, openInvite }: { room: Room; players: PlayerDo
               {room.code}
             </button>
           </div>
+          <Link
+            href={`/room/${room.id}/history`}
+            aria-label="History and leaderboard"
+            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-ivory-muted hover:bg-white/5 hover:text-ivory"
+          >
+            <HistoryIcon />
+          </Link>
           <IconButton label="Invite" onClick={() => setSheet("invite")}>
             <ShareIcon />
           </IconButton>
@@ -345,6 +383,13 @@ function RoomView({ room, players, openInvite }: { room: Room; players: PlayerDo
                 {myEngine && myEngine.totalIn > 0 && (
                   <p className="text-xs text-ivory-muted tabular-nums">{formatChips(myEngine.totalIn)} in this hand</p>
                 )}
+                <button
+                  type="button"
+                  onClick={() => setSheet("rebuy")}
+                  className="text-xs font-semibold text-gold-300 underline-offset-2 hover:text-gold-200 hover:underline"
+                >
+                  {myRebuy ? `Rebuy ${formatChips(myRebuy.amount)} pending…` : "+ Rebuy"}
+                </button>
               </div>
               <ChipPile amount={myStack} size={22} />
               <div className="flex flex-col gap-1.5">
@@ -370,6 +415,18 @@ function RoomView({ room, players, openInvite }: { room: Room; players: PlayerDo
             </div>
           )}
 
+          {isHost && pendingRebuys.length > 0 && (
+            <div className="mt-3">
+              <RebuyRequests
+                requests={pendingRebuys}
+                nameOf={firstName}
+                busy={busy}
+                onDecide={(id, approve) =>
+                  act(approve ? "approve the rebuy" : "deny the rebuy", () => decideRebuy(db, room.id, id, approve))
+                }
+              />
+            </div>
+          )}
           {isHost && (
             <HostHandBar
               mode={room.settings.mode}
@@ -413,6 +470,11 @@ function RoomView({ room, players, openInvite }: { room: Room; players: PlayerDo
               Back to the vote
             </Button>
           )}
+          {resetOpen && resetMinimized === resetOpen.id && (
+            <Button variant="felt" className="mt-3 w-full" onClick={() => setResetMinimized(null)}>
+              Room reset vote in progress
+            </Button>
+          )}
         </div>
       </section>
 
@@ -432,7 +494,51 @@ function RoomView({ room, players, openInvite }: { room: Room; players: PlayerDo
         now={now}
         onMakeHost={(uid) => act("hand over hosting", () => setHost(db, room.id, uid, user.uid))}
         onKick={(uid) => act("remove that player", () => kickPlayer(db, room.id, uid))}
+        onProposeReset={
+          canProposeReset
+            ? async () => {
+                if (await act("propose a reset", () => proposeReset(db, room.id, user.uid))) setSheet(null);
+              }
+            : undefined
+        }
       />
+      {me && (
+        <RebuySheet
+          open={sheet === "rebuy"}
+          onClose={() => setSheet(null)}
+          startingStack={room.settings.startingStack}
+          stack={me.stack}
+          totalRebuys={me.totalRebuys}
+          pending={myRebuy}
+          busy={busy}
+          onRequest={async (amount) => {
+            const ok = await act("ask for chips", () => requestRebuy(db, room.id, user.uid, amount));
+            if (ok) toast(isHost ? "Approve it below" : "Asked the host");
+            return ok;
+          }}
+          onCancel={(id) => act("cancel the request", () => cancelRebuy(db, room.id, id))}
+        />
+      )}
+      {resetOpen && (
+        <ResetVoteSheet
+          open={resetMinimized !== resetOpen.id && sheet === null && !voteOpen}
+          onMinimize={() => setResetMinimized(resetOpen.id)}
+          vote={resetOpen}
+          myUid={user.uid}
+          isHost={isHost}
+          startingStack={room.settings.startingStack}
+          nameOf={firstName}
+          busy={busy}
+          onCast={(yes) => act("vote", () => castBallot(db, room.id, resetOpen.id, user.uid, [yes ? "yes" : "no"]))}
+          onConfirm={async () => {
+            if (await act("reset the room", () => confirmReset(db, room.id, resetOpen.id))) {
+              toast("New season! Everyone is back to the starting stack.", "success");
+            }
+          }}
+          onCancel={() => act("call off the vote", () => cancelReset(db, room.id, resetOpen.id))}
+          onCloseFailed={() => act("close the vote", () => closeFailedReset(db, room.id, resetOpen.id))}
+        />
+      )}
       {isHost && <SettingsSheet open={sheet === "settings"} onClose={() => setSheet(null)} room={room} />}
       <NudgeSheet
         open={sheet === "nudge" && !!toActUid}

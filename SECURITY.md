@@ -46,6 +46,16 @@ Rules are tested in `tests/rules/` (`npm run test:rules`), using the app's real 
 - Only the host closes a vote, and can accept only after time is up or everyone has voted.
 - Guided showdowns open one vote per pot. A pot's candidates must be exactly the players the hand lists as able to win it, so a folded or short all-in player can't be voted a side pot.
 
+**Rebuys**
+- You can only ask for chips for yourself (1 to 1,000,000), tagged with the current season. You can cancel your own request.
+- Only the host approves or denies. An approval must pay in the same write: the player's stack and `totalRebuys` grow by exactly the request's amount (checked through `lastRebuyId`). A request from an earlier season can't be paid.
+
+**Room reset and seasons**
+- Anyone at the table can open a reset vote, between hands only, and only when no other reset vote is open. Their own ballot is "yes"; everyone else votes yes or no once (changeable until 30s are up).
+- **The rules count the yes votes themselves:** only the host can accept, and only when more than half of the voters said yes. The same write must archive the outgoing season (`seasons/{id}`, write-once), switch the room to a new season id, and put every stack it touches back to the starting amount with zero rebuys.
+- Anyone can close a vote as failed once time is up (or everyone voted) without enough yes; the host can call it off any time.
+- Hands record their season; every finished hand records each player's stack afterwards (for timelines).
+
 **Nudges**
 - One doc per sender (`nudges/{yourUid}`), so you can only nudge as yourself, at someone else in the room, with one of the 8 presets, and at most once every 15 seconds by the server's clock.
 
@@ -64,6 +74,9 @@ Rules are tested in `tests/rules/` (`npm run test:rules`), using the app's real 
 | **Feed timestamps use the device clock.** Firestore doesn't allow server timestamps inside arrays. | Display only. |
 | **Guided moves aren't replayed by the rules.** The player to act writes the next engine state; rules check who acted, the action count, and the chip totals (yours only grows, never past your stack, everything sums to the pot), but can't re-run the betting logic. So a modified client on its own turn could, say, skip the min-raise rule or move another player's total down. | Only the player whose turn it is can write, everyone watches the feed, and the host can call the hand off. |
 | **Per-pot payouts trust the host.** Rules check that guided payouts add up to the pot and only go to listed winners, but can't check each pot's split against each accepted vote (no loops over pots). | Same as wallet mode: the host confirms results in front of everyone. |
+| **Reset voters are listed by the proposer.** Rules check the proposer is at the table and in the list (max 10), but can't check the list matches the seat map. | The list is shown in the vote; the host confirms. |
+| **A reset can't prove it touched every player.** Rules check each stack it writes, but can't require a write for every player doc. | The app resets every player in one transaction. |
+| **Leaderboard and session stats are computed on the client** from hand docs, and `stacksAfter` isn't verified by the rules. | Display only; stacks themselves are protected. |
 | **"Gone quiet" uses advisory presence.** The host can fold for a player whose heartbeat is 2+ minutes old. | Fold only, never bet; same trust as host takeover. |
 | **Ballots aren't secret.** Members can read the vote doc. | It's a show of hands. |
 | **Passwords are online-guessable.** Anyone with the code can retry member writes. There's no rate limit beyond Firestore's own. | Passwords are a casual extra; the code is the real gate. |

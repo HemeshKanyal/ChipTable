@@ -36,6 +36,10 @@ export interface RoomDoc {
   handCount?: number;
   /** Dealer button of the latest hand. */
   buttonSeat?: number | null;
+  /** The room-reset vote in progress, if any. */
+  resetVoteId?: string | null;
+  /** When the current season began; the room's createdAt for the first one. */
+  seasonStartedAt?: Timestamp;
 }
 
 /** `rooms/{roomId}/players/{uid}` */
@@ -46,7 +50,10 @@ export interface PlayerDoc {
   stack: number;
   status: PlayerStatus;
   seatIndex: number | null;
+  /** Approved rebuys this season. */
   totalRebuys: number;
+  /** The request behind the latest rebuy (the Rules check the stack grew by its amount). */
+  lastRebuyId?: string;
   lastSeen: Timestamp | null;
   joinedAt: Timestamp;
 }
@@ -108,10 +115,14 @@ export interface HandResult {
   voteRounds: number;
   /** Guided showdowns: each pot and who won it. */
   pots?: PotResult[];
+  /** Every participant's stack once the hand was paid (complete hands). For stack timelines. */
+  stacksAfter?: Record<string, number>;
 }
 
 interface HandBase {
   number: number;
+  /** The season it was played in. Hands from before Phase 6 lack it (season "s1"). */
+  seasonId?: string;
   status: HandStatus;
   buttonSeat: number;
   /** Everything in the middle. */
@@ -181,6 +192,49 @@ export interface VoteDoc {
   status: VoteStatus;
   hostDecision: { winners: string[] } | null;
   closedAt: Timestamp | null;
+}
+
+export type ResetVoteStatus = "open" | "accepted" | "failed" | "cancelled";
+
+/**
+ * `rooms/{roomId}/votes/{voteId}` with type "reset": anyone at the table proposes resetting every
+ * stack. Passes with yes from more than half the voters; then the host confirms.
+ */
+export interface ResetVoteDoc {
+  type: "reset";
+  proposedBy: string;
+  openedAt: Timestamp;
+  durationMs: number;
+  candidates: ["yes", "no"];
+  /** Everyone at the table (seated or sitting out) when it opened. */
+  voterUids: string[];
+  /** voter uid → ["yes"] or ["no"] (same shape as winner ballots). */
+  ballots: Record<string, string[]>;
+  status: ResetVoteStatus;
+  closedAt: Timestamp | null;
+}
+
+export type RebuyStatus = "pending" | "approved" | "denied" | "cancelled";
+
+/** `rooms/{roomId}/requests/{requestId}`: a player asks the host for more chips. Kept as history. */
+export interface RebuyRequestDoc {
+  uid: string;
+  amount: number;
+  seasonId: string;
+  status: RebuyStatus;
+  createdAt: Timestamp;
+  decidedAt: Timestamp | null;
+}
+
+/** `rooms/{roomId}/seasons/{seasonId}`: a finished season, archived when the room was reset. */
+export interface SeasonDoc {
+  number: number;
+  startedAt: Timestamp;
+  endedAt: Timestamp;
+  startingStack: number;
+  /** Everyone who had a seat that season, as they finished. */
+  finalStacks: Record<string, { displayName: string; stack: number; totalRebuys: number }>;
+  resetVoteId: string;
 }
 
 /** `rooms/{roomId}/nudges/{senderUid}`: one doc per sender, so the Rules can rate-limit it. */
