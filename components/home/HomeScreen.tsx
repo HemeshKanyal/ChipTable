@@ -1,11 +1,13 @@
 "use client";
 
 import { motion } from "framer-motion";
+import Link from "next/link";
 import { useAuth, useSignedInUser } from "@/components/auth/AuthProvider";
 import { AppHeader } from "@/components/layout/AppHeader";
-import { Button } from "@/components/ui/Button";
 import { Chip } from "@/components/ui/Chip";
 import { ErrorNotice } from "@/components/ui/ErrorNotice";
+import { JoinCodeCard } from "./JoinCodeCard";
+import { MyRoomsList } from "./MyRoomsList";
 
 function greeting(hour: number) {
   if (hour < 5) return "Late night";
@@ -52,12 +54,18 @@ export function HomeScreen() {
                 <p className="text-sm text-ivory-muted">Name it, set blinds and stacks, invite friends.</p>
               </div>
             </div>
-            <Button size="lg" className="relative mt-5 w-full" disabled>
+            <Link
+              href="/rooms/new"
+              className="relative mt-5 flex h-13 w-full items-center justify-center rounded-2xl bg-linear-to-b from-gold-300 via-gold-500 to-gold-600 text-base font-semibold text-felt-950 shadow-[inset_0_1px_0_rgb(255_255_255/0.6),0_6px_16px_-6px_rgb(0_0_0/0.8)] transition hover:brightness-105 active:scale-[0.98]"
+            >
               Create room
-            </Button>
-            <p className="relative mt-2 text-center text-xs text-ivory-muted/70">Coming in Phase 2</p>
+            </Link>
           </div>
         </motion.section>
+
+        <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.09 }}>
+          <JoinCodeCard />
+        </motion.div>
 
         {/* My Rooms */}
         <motion.section
@@ -71,15 +79,7 @@ export function HomeScreen() {
               My Rooms
             </h2>
           </div>
-          <div className="flex flex-col items-center gap-2 rounded-2xl border border-dashed gold-hairline bg-felt-900/40 px-6 py-10 text-center">
-            <span className="text-2xl text-gold-500/70" aria-hidden>
-              ♠
-            </span>
-            <p className="font-semibold">No rooms yet</p>
-            <p className="max-w-xs text-sm text-ivory-muted">
-              Rooms you create or join will show up here with when you last played.
-            </p>
-          </div>
+          <MyRoomsList uid={user.uid} />
         </motion.section>
       </main>
     </>

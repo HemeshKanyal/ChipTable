@@ -25,6 +25,10 @@ npm run dev
 
 With the emulators running, "Continue with Google" opens the emulator's fake Google picker. Choose **Add new account** and enter any name and email. You can see the resulting `users/{uid}` document in the Emulator UI under Firestore.
 
+### Trying multiplayer on one computer
+
+Open a second browser profile (or a private window) and sign in as a different emulator account. Create a room in one window, then join it from the other with the code or the invite link.
+
 ### Testing from a phone on your Wi-Fi
 
 1. Find your computer's LAN IP (e.g. `192.168.1.20`).
@@ -39,6 +43,7 @@ With the emulators running, "Continue with Google" opens the emulator's fake Goo
 | `npm run dev` | Next.js dev server |
 | `npm run emulators` | Firebase Auth + Firestore emulators (`demo-chiptable` project) |
 | `npm test` | Vitest unit tests |
+| `npm run test:rules` | Security Rules tests (starts its own Firestore emulator; stop `npm run emulators` first, or run `npx vitest run -c vitest.rules.config.mts` against the running one) |
 | `npm run typecheck` | `tsc --noEmit` |
 | `npm run lint` | ESLint |
 | `npm run build` | Production build |
@@ -49,6 +54,8 @@ With the emulators running, "Continue with Google" opens the emulator's fake Goo
 2. Add a Web app and copy its config into `.env.local`, then set `NEXT_PUBLIC_USE_FIREBASE_EMULATORS=false`.
 3. Deploy the rules: `npx firebase deploy --only firestore:rules --project <your-project-id>`.
 
+See [`SECURITY.md`](./SECURITY.md) for what the rules guarantee and what they can't.
+
 ## Project layout
 
 ```
@@ -56,6 +63,9 @@ app/                 routes, root layout, global theme (globals.css)
 components/          UI: auth/, home/, layout/, ui/
 lib/firebase/        Firebase client init, emulator wiring, Firestore helpers
 lib/chips.ts         chip denominations and amount → chip breakdown
+lib/room/            pure room logic: codes, settings validation, seating, host succession
+lib/hooks/           live Firestore subscriptions (room, My Rooms, presence)
+tests/rules/         Security Rules tests against the emulator
 lib/engine/          (Phase 4) pure game logic
 firestore.rules      Security Rules
 ```
@@ -63,7 +73,7 @@ firestore.rules      Security Rules
 ## Build phases
 
 - [x] **1. Foundation**: setup, theme tokens, Firebase + emulators, Google sign-in, users collection, felt layout
-- [ ] 2. Rooms
+- [x] **2. Rooms**: create with settings, join by code/link/QR (+ password), My Rooms, seating, presence, host transfer
 - [ ] 3. Wallet mode
 - [ ] 4. Engine
 - [ ] 5. Guided mode UI

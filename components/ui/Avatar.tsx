@@ -1,3 +1,7 @@
+"use client";
+
+import { useState } from "react";
+
 interface AvatarProps {
   name: string;
   photoURL?: string | null;
@@ -12,10 +16,11 @@ function initials(name: string) {
 }
 
 export function Avatar({ name, photoURL, size = 36, className = "" }: AvatarProps) {
+  const [failedURL, setFailedURL] = useState<string | null>(null);
   const style = { width: size, height: size, fontSize: Math.round(size * 0.38) };
   const ring = "rounded-full ring-2 ring-gold-500/60 ring-offset-2 ring-offset-felt-900";
 
-  if (photoURL) {
+  if (photoURL && failedURL !== photoURL) {
     return (
       // Google profile photos are tiny and come from many hosts; next/image adds nothing here.
       // eslint-disable-next-line @next/next/no-img-element
@@ -23,8 +28,9 @@ export function Avatar({ name, photoURL, size = 36, className = "" }: AvatarProp
         src={photoURL}
         alt=""
         referrerPolicy="no-referrer"
+        onError={() => setFailedURL(photoURL)}
         style={style}
-        className={`${ring} object-cover ${className}`}
+        className={`${ring} shrink-0 object-cover ${className}`}
       />
     );
   }
@@ -32,7 +38,7 @@ export function Avatar({ name, photoURL, size = 36, className = "" }: AvatarProp
     <span
       aria-hidden
       style={style}
-      className={`${ring} inline-flex items-center justify-center bg-felt-600 font-semibold text-gold-200 ${className}`}
+      className={`${ring} inline-flex shrink-0 items-center justify-center bg-felt-600 font-semibold text-gold-200 ${className}`}
     >
       {initials(name)}
     </span>

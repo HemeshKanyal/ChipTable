@@ -1,31 +1,298 @@
 rules_version = '2';
 
-// Phase 1: only user profiles exist. Room rules arrive in later phases.
+// See SECURITY.md for what these rules can and can't guarantee without server code.
 service cloud.firestore {
   match /databases/{database}/documents {
+
+    // ------------------------------------------------------------ helpers
+
     function signedIn() {
       return request.auth != null;
     }
 
+    function me() {
+      return request.auth.uid;
+    }
+
+    function changed() {
+      return request.resource.data.diff(resource.data).affectedKeys();
+    }
+
+    function roomPath(roomId) {
+      return /databases/$(database)/documents/rooms/$(roomId);
+    }
+
+    function playerPath(roomId, uid) {
+      return /databases/$(database)/documents/rooms/$(roomId)/players/$(uid);
+    }
+
+    function memberPath(roomId, uid) {
+      return /databases/$(database)/documents/rooms/$(roomId)/members/$(uid);
+    }
+
+    function secretPath(roomId) {
+      return /databases/$(database)/documents/rooms/$(roomId)/secrets/join;
+    }
+
+    function codePath(code) {
+      return /databases/$(database)/documents/codes/$(code);
+    }
+
+    // A member is someone who once proved they knew the code (and password).
+    function isMember(roomId) {
+      return signedIn() && exists(memberPath(roomId, me()));
+    }
+
+    function isHost(roomId) {
+      return signedIn() && get(roomPath(roomId)).data.hostUid == me();
+    }
+
+    // The room is being created in this same batch, by the caller.
+    function creatingRoom(roomId) {
+      return !exists(roomPath(roomId)) && getAfter(roomPath(roomId)).data.hostUid == me();
+    }
+
+    // Spec: host passes on after 2 minutes offline. Keep in sync with HOST_TIMEOUT_MS.
+    function hostTimeout() {
+      return duration.value(2, 'm');
+    }
+
+    function validName(n) {
+      return n is string && n.size() >= 1 && n.size() <= 40;
+    }
+
+    function validDisplayName(n) {
+      return n is string && n.size() >= 1 && n.size() <= 80;
+    }
+
+    function validPhoto(p) {
+      return p == null || (p is string && p.size() <= 2048);
+    }
+
+    function validHash(h) {
+      return h == null || (h is string && h.size() == 64);
+    }
+
+    // Mirrors validateRoomSettings() in lib/room/settings.ts.
+    function validSettings(s) {
+      return s.keys().hasOnly(['startingStack', 'sb', 'bb', 'mode', 'maxPlayers'])
+        && s.keys().hasAll(['startingStack', 'sb', 'bb', 'mode', 'maxPlayers'])
+        && s.startingStack is int && s.startingStack >= 1 && s.startingStack <= 1000000
+        && s.sb is int && s.sb >= 1
+        && s.bb is int && s.bb >= s.sb && s.bb <= s.startingStack
+        && s.mode in ['guided', 'wallet']
+        && s.maxPlayers is int && s.maxPlayers >= 2 && s.maxPlayers <= 10;
+    }
+
+    // ------------------------------------------------------------ users
+
     function validProfile(data) {
       return data.keys().hasOnly(['displayName', 'photoURL', 'createdAt'])
-        && data.displayName is string
-        && data.displayName.size() > 0
-        && data.displayName.size() <= 80
-        && (data.photoURL == null || (data.photoURL is string && data.photoURL.size() <= 2048));
+        && validDisplayName(data.displayName)
+        && validPhoto(data.photoURL);
     }
 
     match /users/{uid} {
       allow read: if signedIn();
       allow create: if signedIn()
-        && request.auth.uid == uid
+        && me() == uid
         && validProfile(request.resource.data)
         && request.resource.data.createdAt == request.time;
       allow update: if signedIn()
-        && request.auth.uid == uid
+        && me() == uid
         && validProfile(request.resource.data)
         && request.resource.data.createdAt == resource.data.createdAt;
       allow delete: if false;
+
+      // "My Rooms" index. Only rooms you're actually a player in.
+      match /rooms/{roomId} {
+        allow read: if signedIn() && me() == uid;
+        allow create: if signedIn() && me() == uid
+          && request.resource.data.keys().hasOnly(['roomId', 'joinedAt', 'lastVisitedAt'])
+          && request.resource.data.roomId == roomId
+          && request.resource.data.joinedAt == request.time
+          && request.resource.data.lastVisitedAt == request.time
+          && existsAfter(playerPath(roomId, uid));
+        allow update: if signedIn() && me() == uid
+          && changed().hasOnly(['lastVisitedAt'])
+          && request.resource.data.lastVisitedAt == request.time;
+        allow delete: if signedIn() && me() == uid;
+      }
+    }
+
+    // ------------------------------------------------------------ join codes
+
+    // Holding a code lets you look it up (get), never browse (list).
+    match /codes/{code} {
+      allow get: if signedIn();
+      allow list: if false;
+      allow create: if signedIn()
+        && code.matches('^[A-HJKMNP-Z2-9]{6}$')
+        && request.resource.data.keys().hasOnly(['roomId', 'name', 'salt', 'hasPassword', 'createdAt'])
+        && request.resource.data.salt is string && request.resource.data.salt.size() <= 64
+        && request.resource.data.hasPassword is bool
+        && request.resource.data.createdAt == request.time
+        && creatingRoom(request.resource.data.roomId)
+        && getAfter(roomPath(request.resource.data.roomId)).data.code == code
+        && request.resource.data.name == getAfter(roomPath(request.resource.data.roomId)).data.name;
+      allow update: if isHost(resource.data.roomId)
+        && changed().hasOnly(['name', 'hasPassword'])
+        && validName(request.resource.data.name)
+        && request.resource.data.hasPassword is bool;
+      allow delete: if false;
+    }
+
+    // ------------------------------------------------------------ rooms
+
+    match /rooms/{roomId} {
+      // Seat map changes a non-host may make: claim one empty seat and/or release their own.
+      // The seat being claimed is the one their player doc points at after this write.
+      function seatChangeOk() {
+        let before = resource.data.seats;
+        let after = request.resource.data.seats;
+        let d = after.diff(before);
+        let mine = playerPath(roomId, me());
+        let newSeat = getAfter(mine).data.seatIndex;
+        return d.changedKeys().size() == 0
+          && (d.addedKeys().size() == 0 || (
+                newSeat is int
+                && newSeat >= 0
+                && newSeat < resource.data.settings.maxPlayers
+                && d.addedKeys().hasOnly([string(newSeat)])
+                && after[string(newSeat)] == me()
+                && (d.removedKeys().size() > 0 || !(me() in before.values()))))
+          && (d.removedKeys().size() == 0 || (
+                exists(mine)
+                && get(mine).data.seatIndex is int
+                && d.removedKeys().hasOnly([string(get(mine).data.seatIndex)])
+                && before[string(get(mine).data.seatIndex)] == me()));
+      }
+
+      // A non-host may take over hosting only if the host left or went quiet for 2+ minutes,
+      // and the new host is at the table and online.
+      function takeoverOk() {
+        let oldHost = get(playerPath(roomId, resource.data.hostUid)).data;
+        let newHost = getAfter(playerPath(roomId, request.resource.data.hostUid)).data;
+        return (oldHost.status == 'left' || request.time > oldHost.lastSeen + hostTimeout())
+          && newHost.status in ['seated', 'sittingOut']
+          && request.time < newHost.lastSeen + hostTimeout();
+      }
+
+      function newHostOk() {
+        return getAfter(playerPath(roomId, request.resource.data.hostUid)).data.status in ['seated', 'sittingOut'];
+      }
+
+      allow read: if isMember(roomId);
+
+      allow create: if signedIn()
+        && request.resource.data.keys().hasOnly([
+             'name', 'code', 'hostUid', 'settings', 'seats', 'hasPassword',
+             'seasonId', 'status', 'createdAt', 'lastActiveAt'])
+        && request.resource.data.hostUid == me()
+        && validName(request.resource.data.name)
+        && validSettings(request.resource.data.settings)
+        && request.resource.data.seats == {'0': me()}
+        && request.resource.data.hasPassword is bool
+        && request.resource.data.seasonId is string
+        && request.resource.data.status == 'active'
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.lastActiveAt == request.time
+        && getAfter(codePath(request.resource.data.code)).data.roomId == roomId
+        && existsAfter(memberPath(roomId, me()));
+
+      allow update: if signedIn() && (
+        // Host: settings, name, seats (kicks), handing over.
+        (resource.data.hostUid == me()
+          && changed().hasOnly(['name', 'settings', 'seats', 'hostUid', 'hasPassword', 'lastActiveAt'])
+          && validName(request.resource.data.name)
+          && validSettings(request.resource.data.settings)
+          && request.resource.data.hasPassword is bool
+          && (!changed().hasAny(['hostUid']) || newHostOk()))
+        ||
+        // Members: their own seat, and taking over from an absent host.
+        (isMember(roomId)
+          && changed().hasOnly(['seats', 'hostUid', 'lastActiveAt'])
+          && (!changed().hasAny(['seats']) || seatChangeOk())
+          && (!changed().hasAny(['hostUid']) || takeoverOk()))
+      );
+
+      allow delete: if false;
+
+      // ---------------------------------------------------------- members (join proof)
+
+      match /members/{uid} {
+        allow get: if signedIn() && me() == uid;
+        allow list: if false;
+        allow create: if signedIn() && me() == uid
+          && request.resource.data.keys().hasOnly(['code', 'passwordHash', 'createdAt'])
+          && request.resource.data.createdAt == request.time
+          && validHash(request.resource.data.passwordHash)
+          && request.resource.data.code == getAfter(roomPath(roomId)).data.code
+          && request.resource.data.passwordHash == getAfter(secretPath(roomId)).data.passwordHash;
+        allow update, delete: if false;
+      }
+
+      // ---------------------------------------------------------- secrets
+
+      match /secrets/{docId} {
+        allow read: if isHost(roomId);
+        allow create: if docId == 'join'
+          && signedIn()
+          && creatingRoom(roomId)
+          && request.resource.data.keys().hasOnly(['passwordHash'])
+          && validHash(request.resource.data.passwordHash);
+        allow update: if docId == 'join'
+          && isHost(roomId)
+          && request.resource.data.keys().hasOnly(['passwordHash'])
+          && validHash(request.resource.data.passwordHash);
+        allow delete: if false;
+      }
+
+      // ---------------------------------------------------------- players
+
+      match /players/{uid} {
+        // status/seatIndex must agree with the room's seat map after this write.
+        function seatConsistent(p) {
+          return (p.status == 'left' && p.seatIndex == null)
+            || (p.status in ['seated', 'sittingOut']
+                && p.seatIndex is int
+                && getAfter(roomPath(roomId)).data.seats.get(string(p.seatIndex), null) == uid);
+        }
+
+        allow read: if isMember(roomId) || (signedIn() && me() == uid);
+
+        allow create: if signedIn() && me() == uid
+          && existsAfter(memberPath(roomId, uid))
+          && request.resource.data.keys().hasOnly([
+               'uid', 'displayName', 'photoURL', 'stack', 'status', 'seatIndex',
+               'totalRebuys', 'lastSeen', 'joinedAt'])
+          && request.resource.data.uid == uid
+          && validDisplayName(request.resource.data.displayName)
+          && validPhoto(request.resource.data.photoURL)
+          && request.resource.data.stack == getAfter(roomPath(roomId)).data.settings.startingStack
+          && request.resource.data.totalRebuys == 0
+          && request.resource.data.lastSeen == request.time
+          && request.resource.data.joinedAt == request.time
+          && seatConsistent(request.resource.data);
+
+        allow update: if signedIn() && (
+          // Yourself: presence, name/photo, sitting out, seat moves. Never your stack.
+          (me() == uid
+            && changed().hasOnly(['displayName', 'photoURL', 'status', 'seatIndex', 'lastSeen'])
+            && validDisplayName(request.resource.data.displayName)
+            && validPhoto(request.resource.data.photoURL)
+            && (!changed().hasAny(['lastSeen']) || request.resource.data.lastSeen == request.time)
+            && (!changed().hasAny(['status', 'seatIndex']) || seatConsistent(request.resource.data)))
+          ||
+          // Host: kick (send to 'left').
+          (isHost(roomId)
+            && changed().hasOnly(['status', 'seatIndex'])
+            && request.resource.data.status == 'left'
+            && request.resource.data.seatIndex == null)
+        );
+
+        allow delete: if false;
+      }
     }
 
     match /{document=**} {
