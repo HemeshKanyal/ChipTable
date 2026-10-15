@@ -23,6 +23,18 @@ Rules are tested in `tests/rules/` (`npm run test:rules`), using the app's real 
 - A player's `status`/`seatIndex` must match the room's seat map after every write.
 - Presence (`lastSeen`) must be the server's time.
 
+**Hands and chips (wallet mode)**
+- Only the host can start a hand, and only when none is running. Settings are locked while a hand is on.
+- A contribution must take exactly as many chips from your stack as it adds to the pot, and only into your own column. The feed entry must match, and earlier feed entries can't be rewritten. The two documents check each other in the same write.
+- Stacks can't go below zero; you can't bet while sitting out or once voting starts.
+- Payouts must be non-negative and add up to exactly the pot. Each winner's stack rises by exactly their payout.
+  - A win must match the host's decision recorded on the accepted vote.
+  - A called-off hand must refund exactly what each player put in.
+
+**Votes**
+- One ballot per voter (a map keyed by your uid), only for listed candidates, only from players seated when voting opened, and only until 30 seconds after the server opened the vote.
+- Only the host closes a vote, and can accept only after time is up or everyone has voted.
+
 **Host**
 - Only the host can change the name, settings or password, remove players, or hand over hosting.
 - Settings are range-checked (stack 1–1,000,000, `sb ≥ 1`, `sb ≤ bb ≤ stack`, mode `guided`/`wallet`, 2–10 seats).
@@ -32,7 +44,11 @@ Rules are tested in `tests/rules/` (`npm run test:rules`), using the app's real 
 
 | Gap | Why it's acceptable here |
 | --- | --- |
-| **Chip conservation.** Rules can't sum stacks across documents, so they can't prove chips are neither created nor destroyed across a whole hand. Arriving with Phases 3–5: each write will be checked against the hand state it touches, but not globally. | Friends' game, play chips only, full history visible to everyone. |
+| **The host is trusted to follow the vote.** Rules check that a payout matches the host's accepted decision, but not that it matches the majority (rules can't count ballots). | Spec: the host confirms the result. Everyone sees the breakdown, and the tally is stored on the hand. |
+| **Payouts reach at most 10 players.** Rules have no loops, so payouts are summed with a fixed 10-term expression. | Tables seat at most 10. |
+| **A host could finish a hand without crediting a winner's stack** in the same write. Rules check each stack that is written, but can't require that every winner's stack is written. | The app always writes them together in one transaction. |
+| **Feed timestamps use the device clock.** Firestore doesn't allow server timestamps inside arrays. | Display only. |
+| **Ballots aren't secret.** Members can read the vote doc. | It's a show of hands. |
 | **Passwords are online-guessable.** Anyone with the code can retry member writes. There's no rate limit beyond Firestore's own. | Passwords are a casual extra; the code is the real gate. |
 | **Members can see the code forever.** Changing the password doesn't remove existing members. | Matches how a real home game works. |
 | **Removed players can rejoin** with the code (they keep their stack). There's no ban list yet. | Small, trusted groups. The host can change the password to stop new joins. |

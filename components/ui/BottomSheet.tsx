@@ -1,6 +1,6 @@
 "use client";
 
-import { AnimatePresence, motion, type PanInfo } from "framer-motion";
+import { AnimatePresence, motion, useIsPresent, type PanInfo } from "framer-motion";
 import { useEffect } from "react";
 
 interface BottomSheetProps {
@@ -30,7 +30,7 @@ export function BottomSheet({ open, onClose, title, children }: BottomSheetProps
   return (
     <AnimatePresence>
       {open && (
-        <div className="fixed inset-0 z-50 flex items-end justify-center">
+        <SheetFrame>
           <motion.div
             className="absolute inset-0 bg-black/60 backdrop-blur-[2px]"
             initial={{ opacity: 0 }}
@@ -60,8 +60,18 @@ export function BottomSheet({ open, onClose, title, children }: BottomSheetProps
               {children}
             </div>
           </motion.div>
-        </div>
+        </SheetFrame>
       )}
     </AnimatePresence>
+  );
+}
+
+/** While a closing sheet animates out, it must never swallow taps meant for the page. */
+function SheetFrame({ children }: { children: React.ReactNode }) {
+  const present = useIsPresent();
+  return (
+    <div className={`fixed inset-0 z-50 flex items-end justify-center ${present ? "" : "pointer-events-none"}`}>
+      {children}
+    </div>
   );
 }

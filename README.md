@@ -29,6 +29,16 @@ With the emulators running, "Continue with Google" opens the emulator's fake Goo
 
 Open a second browser profile (or a private window) and sign in as a different emulator account. Create a room in one window, then join it from the other with the code or the invite link.
 
+### Playing a wallet-mode hand
+
+1. Create the room in **Wallet** mode (or switch it in ⚙ settings), then get two or more people seated.
+2. The host taps **Start hand**. The dealer button moves one seat clockwise each hand.
+3. Anyone seated taps chips (or types an amount) and **Bet**s. Every bet shows in the feed in the middle of the table.
+4. When the cards are turned over, the host taps **Showdown · vote**. Everyone seated gets 30 seconds to pick the winner, or several winners for a split.
+5. The host accepts the majority (or picks among tied top choices), or redoes the vote. The pot flies to the winners.
+
+**Call off hand** refunds everyone, for misdeals.
+
 ### Testing from a phone on your Wi-Fi
 
 1. Find your computer's LAN IP (e.g. `192.168.1.20`).
@@ -74,7 +84,7 @@ firestore.rules      Security Rules
 
 - [x] **1. Foundation**: setup, theme tokens, Firebase + emulators, Google sign-in, users collection, felt layout
 - [x] **2. Rooms**: create with settings, join by code/link/QR (+ password), My Rooms, seating, presence, host transfer
-- [ ] 3. Wallet mode
+- [x] **3. Wallet mode**: start a hand, chip buttons + custom bets, live feed, 30s winner vote (split pots), host accept / redo / call off, payout animation
 - [ ] 4. Engine
 - [ ] 5. Guided mode UI
 - [ ] 6. Rebuys, reset vote, history, leaderboard, seasons

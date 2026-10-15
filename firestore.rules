@@ -38,6 +38,35 @@ service cloud.firestore {
       return /databases/$(database)/documents/codes/$(code);
     }
 
+    function handPath(roomId, handId) {
+      return /databases/$(database)/documents/rooms/$(roomId)/hands/$(handId);
+    }
+
+    function votePath(roomId, voteId) {
+      return /databases/$(database)/documents/rooms/$(roomId)/votes/$(voteId);
+    }
+
+    // The room's hand in progress (before this write). Points nowhere when there isn't one.
+    function currentHandPath(roomId) {
+      return handPath(roomId, get(roomPath(roomId)).data.get('currentHandId', '-'));
+    }
+
+    // Rules have no loops. Pots pay at most 10 players, so add up to 10 values by hand.
+    function at(l, i) {
+      return l.size() > i ? l[i] : 0;
+    }
+
+    function sum10(l) {
+      return at(l, 0) + at(l, 1) + at(l, 2) + at(l, 3) + at(l, 4)
+        + at(l, 5) + at(l, 6) + at(l, 7) + at(l, 8) + at(l, 9);
+    }
+
+    function allNonNegative10(l) {
+      return l.size() <= 10
+        && at(l, 0) >= 0 && at(l, 1) >= 0 && at(l, 2) >= 0 && at(l, 3) >= 0 && at(l, 4) >= 0
+        && at(l, 5) >= 0 && at(l, 6) >= 0 && at(l, 7) >= 0 && at(l, 8) >= 0 && at(l, 9) >= 0;
+    }
+
     // A member is someone who once proved they knew the code (and password).
     function isMember(roomId) {
       return signedIn() && exists(memberPath(roomId, me()));
@@ -178,6 +207,21 @@ service cloud.firestore {
           && request.time < newHost.lastSeen + hostTimeout();
       }
 
+      // Host moves the current-hand pointer: on to a freshly started hand, or off a finished one.
+      function handPointerOk() {
+        let before = resource.data.get('currentHandId', null);
+        let after = request.resource.data.currentHandId;
+        return (before == null
+                && after is string
+                && !exists(handPath(roomId, after))
+                && getAfter(handPath(roomId, after)).data.status == 'betting'
+                && request.resource.data.handCount == resource.data.get('handCount', 0) + 1)
+          || (before != null
+                && after == null
+                && getAfter(handPath(roomId, before)).data.status in ['complete', 'cancelled']
+                && request.resource.data.lastHandId == before);
+      }
+
       function newHostOk() {
         return getAfter(playerPath(roomId, request.resource.data.hostUid)).data.status in ['seated', 'sittingOut'];
       }
@@ -187,7 +231,12 @@ service cloud.firestore {
       allow create: if signedIn()
         && request.resource.data.keys().hasOnly([
              'name', 'code', 'hostUid', 'settings', 'seats', 'hasPassword',
-             'seasonId', 'status', 'createdAt', 'lastActiveAt'])
+             'seasonId', 'status', 'createdAt', 'lastActiveAt',
+             'currentHandId', 'lastHandId', 'handCount', 'buttonSeat'])
+        && request.resource.data.currentHandId == null
+        && request.resource.data.lastHandId == null
+        && request.resource.data.handCount == 0
+        && request.resource.data.buttonSeat == null
         && request.resource.data.hostUid == me()
         && validName(request.resource.data.name)
         && validSettings(request.resource.data.settings)
@@ -201,12 +250,16 @@ service cloud.firestore {
         && existsAfter(memberPath(roomId, me()));
 
       allow update: if signedIn() && (
-        // Host: settings, name, seats (kicks), handing over.
+        // Host: settings (between hands only), name, seats (kicks), handing over, hands.
         (resource.data.hostUid == me()
-          && changed().hasOnly(['name', 'settings', 'seats', 'hostUid', 'hasPassword', 'lastActiveAt'])
+          && changed().hasOnly([
+               'name', 'settings', 'seats', 'hostUid', 'hasPassword', 'lastActiveAt',
+               'currentHandId', 'lastHandId', 'handCount', 'buttonSeat'])
           && validName(request.resource.data.name)
           && validSettings(request.resource.data.settings)
           && request.resource.data.hasPassword is bool
+          && (!changed().hasAny(['settings']) || resource.data.get('currentHandId', null) == null)
+          && (!changed().hasAny(['currentHandId']) || handPointerOk())
           && (!changed().hasAny(['hostUid']) || newHostOk()))
         ||
         // Members: their own seat, and taking over from an absent host.
@@ -259,6 +312,23 @@ service cloud.firestore {
                 && getAfter(roomPath(roomId)).data.seats.get(string(p.seatIndex), null) == uid);
         }
 
+        function contributionStackOk() {
+          let h = currentHandPath(roomId);
+          let d = resource.data.stack - request.resource.data.stack;
+          return d > 0
+            && request.resource.data.stack >= 0
+            && resource.data.status == 'seated'
+            && get(h).data.status == 'betting'
+            && getAfter(h).data.contributions[uid] == get(h).data.contributions.get(uid, 0) + d;
+        }
+
+        function payoutOk() {
+          let h = currentHandPath(roomId);
+          return get(h).data.status in ['betting', 'voting']
+            && getAfter(h).data.status in ['complete', 'cancelled']
+            && request.resource.data.stack == resource.data.stack + getAfter(h).data.result.payouts[uid];
+        }
+
         allow read: if isMember(roomId) || (signedIn() && me() == uid);
 
         allow create: if signedIn() && me() == uid
@@ -284,12 +354,175 @@ service cloud.firestore {
             && (!changed().hasAny(['lastSeen']) || request.resource.data.lastSeen == request.time)
             && (!changed().hasAny(['status', 'seatIndex']) || seatConsistent(request.resource.data)))
           ||
+          // Yourself: chips into the current hand's pot. Must match the pot increase exactly.
+          (me() == uid
+            && changed().hasOnly(['stack'])
+            && contributionStackOk())
+          ||
           // Host: kick (send to 'left').
           (isHost(roomId)
             && changed().hasOnly(['status', 'seatIndex'])
             && request.resource.data.status == 'left'
             && request.resource.data.seatIndex == null)
+          ||
+          // Host: pay out (or refund) as the current hand finishes. Must match the hand's payouts.
+          (isHost(roomId)
+            && changed().hasOnly(['stack'])
+            && payoutOk())
         );
+
+        allow delete: if false;
+      }
+
+      // ---------------------------------------------------------- hands
+
+      match /hands/{handId} {
+        function isCurrent() {
+          return get(roomPath(roomId)).data.get('currentHandId', null) == handId;
+        }
+
+        // A seated player moves chips into the pot: their stack drops by exactly what the pot gains.
+        function contributionOk() {
+          let b = resource.data;
+          let a = request.resource.data;
+          let d = a.pot - b.pot;
+          let n = b.actions.size();
+          let mine = playerPath(roomId, me());
+          return b.status == 'betting'
+            && changed().hasOnly(['pot', 'contributions', 'actions'])
+            && d > 0
+            && a.contributions.diff(b.contributions).affectedKeys().hasOnly([me()])
+            && a.contributions[me()] == b.contributions.get(me(), 0) + d
+            && a.actions.size() == n + 1
+            && (n == 0 || a.actions[0:n] == b.actions)
+            && a.actions[n].keys().hasOnly(['uid', 'amount', 'at'])
+            && a.actions[n].uid == me()
+            && a.actions[n].amount == d
+            && a.actions[n].at is timestamp
+            && get(mine).data.status == 'seated'
+            && getAfter(mine).data.stack == get(mine).data.stack - d;
+        }
+
+        // Host closes betting and points the hand at an open vote (also used for re-votes).
+        function openVoteOk() {
+          let a = request.resource.data;
+          return resource.data.status in ['betting', 'voting']
+            && a.status == 'voting'
+            && changed().hasOnly(['status', 'voteId'])
+            && getAfter(votePath(roomId, a.voteId)).data.handId == handId
+            && getAfter(votePath(roomId, a.voteId)).data.status == 'open';
+        }
+
+        // Host ends the hand. Payouts must add up to the pot; a win must match the accepted vote,
+        // a cancel must refund exactly what each player put in.
+        function finishOk() {
+          let b = resource.data;
+          let a = request.resource.data;
+          let p = a.result.payouts;
+          return b.status in ['betting', 'voting']
+            && a.status in ['complete', 'cancelled']
+            && changed().hasOnly(['status', 'result', 'endedAt'])
+            && a.endedAt == request.time
+            && a.result.keys().hasOnly(['winners', 'payouts', 'decidedBy', 'tally', 'voteRounds'])
+            && allNonNegative10(p.values())
+            && sum10(p.values()) == b.pot
+            && getAfter(roomPath(roomId)).data.currentHandId == null
+            && (a.status == 'complete'
+                ? (b.status == 'voting'
+                   && a.result.decidedBy == 'vote'
+                   && p.keys().hasOnly(a.result.winners)
+                   && getAfter(votePath(roomId, b.voteId)).data.status == 'accepted'
+                   && getAfter(votePath(roomId, b.voteId)).data.hostDecision.winners == a.result.winners)
+                : (a.result.decidedBy == 'cancelled' && p == b.contributions));
+        }
+
+        allow read: if isMember(roomId);
+
+        allow create: if isHost(roomId)
+          && request.resource.data.keys().hasOnly([
+               'number', 'mode', 'status', 'buttonSeat', 'pot', 'contributions', 'actions',
+               'participants', 'voteId', 'startedBy', 'startedAt', 'endedAt', 'result'])
+          && request.resource.data.mode == 'wallet'
+          && request.resource.data.status == 'betting'
+          && request.resource.data.pot == 0
+          && request.resource.data.contributions == {}
+          && request.resource.data.actions == []
+          && request.resource.data.participants is list
+          && request.resource.data.participants.size() >= 2
+          && request.resource.data.participants.size() <= 10
+          && request.resource.data.buttonSeat is int
+          && request.resource.data.voteId == null
+          && request.resource.data.endedAt == null
+          && request.resource.data.result == null
+          && request.resource.data.startedBy == me()
+          && request.resource.data.startedAt == request.time
+          && request.resource.data.number == getAfter(roomPath(roomId)).data.handCount
+          && getAfter(roomPath(roomId)).data.currentHandId == handId;
+
+        allow update: if isMember(roomId) && isCurrent() && (
+          contributionOk()
+          || (isHost(roomId) && (openVoteOk() || finishOk()))
+        );
+
+        allow delete: if false;
+      }
+
+      // ---------------------------------------------------------- votes
+
+      match /votes/{voteId} {
+        function voteEnd() {
+          return resource.data.openedAt + duration.value(resource.data.durationMs, 'ms');
+        }
+
+        function ballotOk() {
+          let mine = request.resource.data.ballots[me()];
+          return changed().hasOnly(['ballots'])
+            && request.time < voteEnd()
+            && me() in resource.data.voterUids
+            && request.resource.data.ballots.diff(resource.data.ballots).affectedKeys().hasOnly([me()])
+            && mine is list
+            && mine.size() >= 1
+            && mine.hasOnly(resource.data.candidates);
+        }
+
+        // Host may accept only once time is up or everyone has voted. Redo/cancel any time.
+        function closeOk() {
+          let a = request.resource.data;
+          return changed().hasOnly(['status', 'hostDecision', 'closedAt'])
+            && a.closedAt == request.time
+            && (a.status in ['redone', 'cancelled']
+                || (a.status == 'accepted'
+                    && (request.time >= voteEnd() || resource.data.ballots.keys().hasAll(resource.data.voterUids))
+                    && a.hostDecision.winners is list
+                    && a.hostDecision.winners.size() >= 1
+                    && a.hostDecision.winners.hasOnly(resource.data.candidates)));
+        }
+
+        allow read: if isMember(roomId);
+
+        allow create: if isHost(roomId)
+          && request.resource.data.keys().hasOnly([
+               'type', 'handId', 'potIndex', 'round', 'openedAt', 'durationMs', 'candidates',
+               'voterUids', 'ballots', 'status', 'hostDecision', 'closedAt'])
+          && request.resource.data.type == 'winner'
+          && request.resource.data.status == 'open'
+          && request.resource.data.potIndex == 0
+          && request.resource.data.round is int
+          && request.resource.data.openedAt == request.time
+          && request.resource.data.durationMs == 30000
+          && request.resource.data.ballots == {}
+          && request.resource.data.hostDecision == null
+          && request.resource.data.closedAt == null
+          && request.resource.data.candidates is list
+          && request.resource.data.candidates.size() >= 1
+          && request.resource.data.candidates.size() <= 10
+          && request.resource.data.voterUids is list
+          && request.resource.data.voterUids.size() <= 10
+          && getAfter(handPath(roomId, request.resource.data.handId)).data.voteId == voteId;
+
+        allow update: if isMember(roomId)
+          && resource.data.status == 'open'
+          && (ballotOk() || (isHost(roomId) && closeOk()));
 
         allow delete: if false;
       }

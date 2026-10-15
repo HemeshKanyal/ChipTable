@@ -7,7 +7,8 @@ import { useSignedInUser } from "@/components/auth/AuthProvider";
 import { LoadingScreen } from "@/components/layout/LoadingScreen";
 import { Button } from "@/components/ui/Button";
 import { ChipPile } from "@/components/ui/ChipPile";
-import { ArrowLeftIcon, CrownIcon, SettingsIcon, ShareIcon, UsersIcon } from "@/components/ui/icons";
+import { RollingNumber } from "@/components/ui/RollingNumber";
+import { ArrowLeftIcon, SettingsIcon, ShareIcon, UsersIcon } from "@/components/ui/icons";
 import { useToast } from "@/components/ui/Toast";
 import { formatChips } from "@/lib/chips";
 import { getFirebase } from "@/lib/firebase/client";
@@ -21,15 +22,29 @@ import {
   takeSeat,
   toPresence,
 } from "@/lib/firebase/rooms";
+import {
+  acceptVote,
+  cancelHand,
+  castBallot,
+  contribute,
+  openWinnerVote,
+  redoVote,
+  startWalletHand,
+} from "@/lib/firebase/hands";
+import { useHand, useVote } from "@/lib/hooks/useHand";
 import { useNow } from "@/lib/hooks/useNow";
 import { useHostWatch, usePresence } from "@/lib/hooks/usePresence";
 import { useRoom, type Room } from "@/lib/hooks/useRoom";
 import { firstFreeSeat } from "@/lib/room/seating";
+import { voteIsDecided } from "@/lib/vote/tally";
 import type { PlayerDoc } from "@/lib/types";
 import { InviteSheet } from "./InviteSheet";
 import { PlayersSheet } from "./PlayersSheet";
 import { PokerTable } from "./PokerTable";
+import { HostHandBar } from "./HostHandBar";
 import { SettingsSheet } from "./SettingsSheet";
+import { VoteSheet } from "./VoteSheet";
+import { WalletControls } from "./WalletControls";
 
 export function RoomScreen({ roomId, openInvite }: { roomId: string; openInvite: boolean }) {
   const state = useRoom(roomId);
@@ -75,6 +90,13 @@ function RoomView({ room, players, openInvite }: { room: Room; players: PlayerDo
   const [sheet, setSheet] = useState<Sheet>(openInvite ? "invite" : null);
   const [busy, setBusy] = useState(false);
 
+  // The hand in progress, or else the last one (for its result and the payout animation).
+  const hand = useHand(room.id, room.currentHandId ?? room.lastHandId ?? null);
+  const liveHand = hand && room.currentHandId === hand.id ? hand : null;
+  const vote = useVote(room.id, liveHand?.status === "voting" ? liveHand.voteId : null);
+  const [voteMinimized, setVoteMinimized] = useState<string | null>(null);
+  const voteOpen = !!vote && vote.status === "open" && voteMinimized !== vote.id;
+
   const me = players.find((p) => p.uid === user.uid);
   const isHost = room.hostUid === user.uid;
   const presence = useMemo(() => players.map(toPresence), [players]);
@@ -98,13 +120,35 @@ function RoomView({ room, players, openInvite }: { room: Room; players: PlayerDo
     toast(room.hostUid === user.uid ? "You're the host now 👑" : `${name} is now the host`);
   }, [room.hostUid, players, user.uid, toast]);
 
-  async function act(label: string, fn: () => Promise<unknown>) {
+  // Announce how a hand ended, but only when we watched it end (not on arrival).
+  const lastSeenHand = useRef<{ id: string; status: string } | null>(null);
+  useEffect(() => {
+    if (!hand) return;
+    const prev = lastSeenHand.current;
+    lastSeenHand.current = { id: hand.id, status: hand.status };
+    const wasLive = prev?.id === hand.id && (prev.status === "betting" || prev.status === "voting");
+    if (!wasLive || !hand.result || hand.status === "betting" || hand.status === "voting") return;
+
+    const { winners, payouts, decidedBy } = hand.result;
+    const name = (uid: string) =>
+      uid === user.uid ? "You" : (players.find((p) => p.uid === uid)?.displayName.split(" ")[0] ?? "Someone");
+    if (decidedBy === "cancelled") toast("Hand called off. Everyone got their chips back.");
+    else if (winners.length === 1) {
+      toast(`${name(winners[0])} ${winners[0] === user.uid ? "win" : "wins"} ${formatChips(payouts[winners[0]])}! 🎉`, "success");
+    } else {
+      toast(`Split pot: ${winners.map((w) => `${name(w)} ${formatChips(payouts[w])}`).join(" · ")}`, "success");
+    }
+  }, [hand, players, user.uid, toast]);
+
+  async function act(label: string, fn: () => Promise<unknown>): Promise<boolean> {
     setBusy(true);
     try {
       await fn();
+      return true;
     } catch (err) {
       console.error(label, err);
       toast(err instanceof RoomError ? err.message : `Couldn't ${label}. Try again.`, "error");
+      return false;
     } finally {
       setBusy(false);
     }
@@ -159,12 +203,19 @@ function RoomView({ room, players, openInvite }: { room: Room; players: PlayerDo
       </div>
 
       <main className="mx-auto flex w-full max-w-lg flex-1 flex-col justify-center px-2 py-2">
-        <PokerTable room={room} players={players} myUid={user.uid} now={now} onSit={onSit} />
+        <PokerTable room={room} players={players} myUid={user.uid} now={now} hand={hand} onSit={onSit} />
       </main>
 
       <section className="sticky bottom-0 z-20 border-t gold-hairline bg-felt-950/85 backdrop-blur-md">
         <div className="mx-auto w-full max-w-lg px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-3">
-          {!me || me.status === "left" ? (
+          {liveHand?.status === "betting" && me?.status === "seated" ? (
+            <WalletControls
+              stack={me.stack}
+              inPot={liveHand.contributions[user.uid] ?? 0}
+              busy={busy}
+              onBet={(amount) => act("bet", () => contribute(db, room.id, liveHand.id, user.uid, amount))}
+            />
+          ) : !me || me.status === "left" ? (
             <div className="flex items-center justify-between gap-3">
               <div>
                 <p className="font-semibold">{me ? "You're on the rail" : "Welcome to the table"}</p>
@@ -180,14 +231,14 @@ function RoomView({ room, players, openInvite }: { room: Room; players: PlayerDo
             <div className="flex items-center gap-3">
               <div className="min-w-0 flex-1">
                 <p className="text-[11px] uppercase tracking-wider text-ivory-muted">Your stack</p>
-                <p className="text-gold text-2xl font-bold tabular-nums">{formatChips(me.stack)}</p>
+                <RollingNumber value={me.stack} className="text-gold text-2xl font-bold tabular-nums" />
               </div>
               <ChipPile amount={me.stack} size={22} />
               <div className="flex flex-col gap-1.5">
                 <Button
                   variant="felt"
                   className="h-9"
-                  disabled={busy}
+                  disabled={busy || (!!liveHand && me.status === "seated" && (liveHand.contributions[user.uid] ?? 0) > 0)}
                   onClick={() =>
                     act("change your status", () => setSittingOut(db, room.id, user.uid, me.status === "seated"))
                   }
@@ -207,13 +258,22 @@ function RoomView({ room, players, openInvite }: { room: Room; players: PlayerDo
           )}
 
           {isHost && (
-            <div className="mt-3 flex items-center gap-2 border-t gold-hairline pt-3">
-              <CrownIcon size={16} />
-              <p className="flex-1 text-xs text-ivory-muted">You&apos;re the host. Dealing hands arrives in the next update.</p>
-              <Button disabled className="h-9">
-                Start hand
-              </Button>
-            </div>
+            <HostHandBar
+              mode={room.settings.mode}
+              hand={liveHand}
+              seatedCount={players.filter((p) => p.status === "seated" && p.seatIndex !== null).length}
+              voteDecided={!!vote && voteIsDecided(vote.openedAt?.toMillis() ?? now, vote.ballots, vote.voterUids, now)}
+              busy={busy}
+              onStart={() => act("start the hand", () => startWalletHand(db, room.id, user.uid))}
+              onShowdown={() => liveHand && act("open the vote", () => openWinnerVote(db, room.id, liveHand.id))}
+              onShowVote={() => setVoteMinimized(null)}
+              onCancel={() => liveHand && act("call off the hand", () => cancelHand(db, room.id, liveHand.id))}
+            />
+          )}
+          {!isHost && liveHand?.status === "voting" && vote && !voteOpen && (
+            <Button className="mt-3 w-full" onClick={() => setVoteMinimized(null)}>
+              Back to the vote
+            </Button>
           )}
         </div>
       </section>
@@ -236,6 +296,21 @@ function RoomView({ room, players, openInvite }: { room: Room; players: PlayerDo
         onKick={(uid) => act("remove that player", () => kickPlayer(db, room.id, uid))}
       />
       {isHost && <SettingsSheet open={sheet === "settings"} onClose={() => setSheet(null)} room={room} />}
+      {liveHand && vote && (
+        <VoteSheet
+          open={voteOpen && sheet === null}
+          onMinimize={() => setVoteMinimized(vote.id)}
+          hand={liveHand}
+          vote={vote}
+          players={players}
+          myUid={user.uid}
+          hostUid={room.hostUid}
+          busy={busy}
+          onCast={(winners) => act("vote", () => castBallot(db, room.id, vote.id, user.uid, winners))}
+          onAccept={(winners) => act("pay out", () => acceptVote(db, room.id, liveHand.id, vote.id, winners))}
+          onRedo={() => act("redo the vote", () => redoVote(db, room.id, liveHand.id, vote.id))}
+        />
+      )}
     </div>
   );
 }

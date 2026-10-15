@@ -8,3 +8,7 @@ export const secretRef = (db: Firestore, roomId: string) => doc(db, "rooms", roo
 export const codeRef = (db: Firestore, code: string) => doc(db, "codes", code);
 export const myRoomsCol = (db: Firestore, uid: string) => collection(db, "users", uid, "rooms");
 export const myRoomRef = (db: Firestore, uid: string, roomId: string) => doc(db, "users", uid, "rooms", roomId);
+export const handsCol = (db: Firestore, roomId: string) => collection(db, "rooms", roomId, "hands");
+export const handRef = (db: Firestore, roomId: string, handId: string) => doc(db, "rooms", roomId, "hands", handId);
+export const votesCol = (db: Firestore, roomId: string) => collection(db, "rooms", roomId, "votes");
+export const voteRef = (db: Firestore, roomId: string, voteId: string) => doc(db, "rooms", roomId, "votes", voteId);

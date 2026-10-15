@@ -80,7 +80,12 @@ function SettingsForm({ room, onDone }: { room: Room; onDone: () => void }) {
         <p className="text-xs text-ivory-muted">
           A new starting stack applies to players joining for the first time. Existing stacks don&apos;t change.
         </p>
-        <Button type="submit" size="lg" disabled={saving}>
+        {room.currentHandId && (
+          <p className="rounded-xl border gold-hairline bg-felt-950/50 px-3 py-2 text-xs text-gold-200">
+            A hand is in progress. Settings can change once it&apos;s over.
+          </p>
+        )}
+        <Button type="submit" size="lg" disabled={saving || !!room.currentHandId}>
           {saving ? "Saving…" : "Save settings"}
         </Button>
       </form>

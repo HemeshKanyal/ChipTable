@@ -16,8 +16,8 @@ interface PlayersSheetProps {
   hostUid: string;
   myUid: string;
   now: number;
-  onMakeHost: (uid: string) => Promise<void>;
-  onKick: (uid: string) => Promise<void>;
+  onMakeHost: (uid: string) => Promise<unknown>;
+  onKick: (uid: string) => Promise<unknown>;
 }
 
 export function PlayersSheet({ open, onClose, players, hostUid, myUid, now, onMakeHost, onKick }: PlayersSheetProps) {
@@ -30,7 +30,7 @@ export function PlayersSheet({ open, onClose, players, hostUid, myUid, now, onMa
     .sort((a, b) => (a.seatIndex ?? 99) - (b.seatIndex ?? 99));
   const away = players.filter((p) => p.status === "left").sort((a, b) => a.displayName.localeCompare(b.displayName));
 
-  async function run(uid: string, action: (uid: string) => Promise<void>) {
+  async function run(uid: string, action: (uid: string) => Promise<unknown>) {
     setBusy(uid);
     try {
       await action(uid);

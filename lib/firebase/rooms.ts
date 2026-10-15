@@ -27,7 +27,15 @@ import {
   secretRef,
 } from "./paths";
 
-export type RoomErrorCode = "not-found" | "wrong-password" | "seat-taken" | "denied";
+export type RoomErrorCode =
+  | "not-found"
+  | "wrong-password"
+  | "seat-taken"
+  | "denied"
+  | "hand-in-progress"
+  | "not-enough-players"
+  | "not-enough-chips"
+  | "hand-closed";
 
 export class RoomError extends Error {
   constructor(
@@ -101,6 +109,10 @@ export async function createRoom(
         status: "active",
         createdAt: serverTimestamp(),
         lastActiveAt: serverTimestamp(),
+        currentHandId: null,
+        lastHandId: null,
+        handCount: 0,
+        buttonSeat: null,
       });
       tx.set(codeRef(db, code), {
         roomId: room.id,
