@@ -8,7 +8,17 @@ import { LoadingScreen } from "@/components/layout/LoadingScreen";
 import { Button } from "@/components/ui/Button";
 import { ChipPile } from "@/components/ui/ChipPile";
 import { RollingNumber } from "@/components/ui/RollingNumber";
-import { ArrowLeftIcon, HistoryIcon, SettingsIcon, ShareIcon, UsersIcon } from "@/components/ui/icons";
+import { useSound } from "@/components/SoundProvider";
+import {
+  ArrowLeftIcon,
+  CardsIcon,
+  HistoryIcon,
+  SettingsIcon,
+  ShareIcon,
+  SoundOffIcon,
+  SoundOnIcon,
+  UsersIcon,
+} from "@/components/ui/icons";
 import { useToast } from "@/components/ui/Toast";
 import { formatChips } from "@/lib/chips";
 import type { PlayerAction } from "@/lib/engine";
@@ -46,6 +56,7 @@ import { NUDGE_COOLDOWN_MS, streetBanner } from "@/lib/hand/guided";
 import { usePendingRebuys, useResetVote } from "@/lib/hooks/useHistory";
 import { tallyReset } from "@/lib/vote/reset";
 import { useHand, useVotes } from "@/lib/hooks/useHand";
+import { useHandSounds } from "@/lib/hooks/useHandSounds";
 import { useNow } from "@/lib/hooks/useNow";
 import { useNudges } from "@/lib/hooks/useNudges";
 import { useHostWatch, usePresence } from "@/lib/hooks/usePresence";
@@ -54,6 +65,7 @@ import { HOST_TIMEOUT_MS, firstFreeSeat } from "@/lib/room/seating";
 import { voteIsDecided } from "@/lib/vote/tally";
 import type { PlayerDoc } from "@/lib/types";
 import { GuidedControls } from "./GuidedControls";
+import { HandRankingsSheet } from "./HandRankingsSheet";
 import { HostHandBar } from "./HostHandBar";
 import { InviteSheet } from "./InviteSheet";
 import { NudgeSheet, NudgeToasts, useNudgeToasts } from "./Nudges";
@@ -99,7 +111,7 @@ function Message({ title, children }: { title: string; children: React.ReactNode
   );
 }
 
-type Sheet = "invite" | "players" | "settings" | "nudge" | "rebuy" | null;
+type Sheet = "invite" | "players" | "settings" | "nudge" | "rebuy" | "rankings" | null;
 
 function RoomView({ room, players, openInvite }: { room: Room; players: PlayerDoc[]; openInvite: boolean }) {
   const user = useSignedInUser();
@@ -187,8 +199,13 @@ function RoomView({ room, players, openInvite }: { room: Room; players: PlayerDo
   const canProposeReset = me?.seatIndex != null && !room.currentHandId && (!resetOpen || resetStuck);
 
   // Nudges aimed at me, and my own cooldown for sending them.
+  const { muted, setMuted, play } = useSound();
+  useHandSounds(hand, user.uid);
   const nudgeToasts = useNudgeToasts();
-  useNudges(room.id, user.uid, (n) => nudgeToasts.show(firstName(n.from), n.preset));
+  useNudges(room.id, user.uid, (n) => {
+    nudgeToasts.show(firstName(n.from), n.preset);
+    play("nudge");
+  });
   const [nudgeCooling, setNudgeCooling] = useState(false);
 
   // Drop ?invite=1 so a refresh doesn't pop the sheet again.
@@ -279,9 +296,11 @@ function RoomView({ room, players, openInvite }: { room: Room; players: PlayerDo
             <button
               type="button"
               onClick={() => setSheet("invite")}
-              className="font-mono text-xs tracking-[0.2em] text-gold-300/80 hover:text-gold-200"
+              aria-label={`Invite players: join code ${room.code}`}
+              className="flex items-center gap-1 font-mono text-xs tracking-[0.2em] text-gold-300/80 hover:text-gold-200"
             >
               {room.code}
+              <ShareIcon size={12} />
             </button>
           </div>
           <Link
@@ -291,8 +310,8 @@ function RoomView({ room, players, openInvite }: { room: Room; players: PlayerDo
           >
             <HistoryIcon />
           </Link>
-          <IconButton label="Invite" onClick={() => setSheet("invite")}>
-            <ShareIcon />
+          <IconButton label={muted ? "Turn sounds on" : "Turn sounds off"} onClick={() => setMuted(!muted)}>
+            {muted ? <SoundOffIcon /> : <SoundOnIcon />}
           </IconButton>
           <IconButton label="Players" onClick={() => setSheet("players")}>
             <UsersIcon />
@@ -316,6 +335,13 @@ function RoomView({ room, players, openInvite }: { room: Room; players: PlayerDo
           </span>{" "}
           seated
         </Pill>
+        <button
+          type="button"
+          onClick={() => setSheet("rankings")}
+          className="flex items-center gap-1 rounded-full border border-gold-400/50 bg-felt-900/60 px-2.5 py-1 text-gold-200 hover:bg-gold-400/10"
+        >
+          <CardsIcon size={12} /> Hands
+        </button>
       </div>
 
       <main className="mx-auto flex w-full max-w-lg flex-1 flex-col justify-center px-2 py-2">
@@ -327,7 +353,7 @@ function RoomView({ room, players, openInvite }: { room: Room; players: PlayerDo
           hand={hand}
           onSit={onSit}
           // The action panel (and the "waiting on" line) are taller than the default bar.
-          reserveRem={myTurn ? (isHost ? 27 : 23) : toActUid ? (isHost ? 23 : 21) : isHost ? 22 : 19}
+          reserveRem={myTurn ? (isHost ? 29 : 25) : toActUid ? (isHost ? 23 : 21) : isHost ? 22 : 19}
         />
       </main>
 
@@ -484,6 +510,7 @@ function RoomView({ room, players, openInvite }: { room: Room; players: PlayerDo
         roomName={room.name}
         code={room.code}
         hasPassword={room.hasPassword}
+        tableViewHref={`/room/${room.id}/table`}
       />
       <PlayersSheet
         open={sheet === "players"}
@@ -574,6 +601,7 @@ function RoomView({ room, players, openInvite }: { room: Room; players: PlayerDo
           }
         />
       )}
+      <HandRankingsSheet open={sheet === "rankings"} onClose={() => setSheet(null)} />
       <NudgeToasts shown={nudgeToasts.shown} />
     </div>
   );

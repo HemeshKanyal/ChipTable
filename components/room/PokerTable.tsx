@@ -22,16 +22,22 @@ interface PokerTableProps {
   now: number;
   /** The current hand, or the last finished one. */
   hand: Hand | null;
-  onSit: (seatIndex: number) => void;
+  /** Omit for a read-only table (Table View): empty seats just show their number. */
+  onSit?: (seatIndex: number) => void;
   /** Screen height kept free for the header and the controls below, so the table never hides behind them. */
   reserveRem?: number;
+  /** Largest the table may grow, in rem of width. */
+  maxRem?: number;
+  /** Exactly this wide (rem), ignoring the screen height. For a table that is scaled as a whole. */
+  fixedRem?: number;
 }
 
 const lerp = (a: Point, b: Point, t: number): Point => ({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
 const CENTER: Point = { x: 50, y: 50 };
 
 /** Oval felt table with seats around the rail. The viewer's seat is always at the bottom. */
-export function PokerTable({ room, players, myUid, now, hand, onSit, reserveRem = 19 }: PokerTableProps) {
+export function PokerTable(props: PokerTableProps) {
+  const { room, players, myUid, now, hand, onSit, reserveRem = 19, maxRem = 26, fixedRem } = props;
   const max = room.settings.maxPlayers;
   const byUid = useMemo(() => new Map(players.map((p) => [p.uid, p])), [players]);
   const me = byUid.get(myUid);
@@ -64,7 +70,11 @@ export function PokerTable({ room, players, myUid, now, hand, onSit, reserveRem 
   return (
     <div
       className="relative mx-auto aspect-[3/4] w-full"
-      style={{ maxWidth: `min(100%, calc((100dvh - ${reserveRem}rem) * 0.75), 26rem)` }}
+      style={
+        fixedRem
+          ? { width: `${fixedRem}rem` }
+          : { maxWidth: `min(100%, calc((100dvh - ${reserveRem}rem) * 0.75), ${maxRem}rem)` }
+      }
     >
       {/* Rail + felt */}
       <div className="rail absolute inset-[8%_9%] rounded-[50%] p-[4.5%]">
@@ -130,7 +140,7 @@ export function PokerTable({ room, players, myUid, now, hand, onSit, reserveRem 
               isMe={isMe}
               isHost={uid === room.hostUid}
               online={player ? isOnline(player.lastSeen?.toMillis() ?? null, now) : false}
-              onSit={!uid ? () => onSit(seatIndex) : undefined}
+              onSit={!uid && onSit ? () => onSit(seatIndex) : undefined}
               sitLabel={mySeat === null ? "Sit" : "Move"}
               stack={inHand?.stack}
               handState={inHand?.folded ? "folded" : inHand?.allIn ? "allIn" : null}
@@ -148,15 +158,18 @@ export function PokerTable({ room, players, myUid, now, hand, onSit, reserveRem 
         {banner?.dealerCue && (
           <motion.div
             key={`${banner.title}-${hand?.id}`}
-            className="pointer-events-none absolute inset-x-[16%] top-[19%] z-[9] flex flex-col items-center rounded-2xl border border-gold-400/70 bg-felt-950/90 px-3 py-2 text-center shadow-gold-glow"
+            className="@container pointer-events-none absolute inset-x-[10%] top-[13%] z-[9] flex flex-col items-center rounded-2xl border border-gold-400/70 bg-felt-950/90 px-2 py-1.5 text-center shadow-gold-glow"
             initial={{ opacity: 0, scale: 0.7, y: -10 }}
             animate={{ opacity: 1, scale: 1, y: 0 }}
             exit={{ opacity: 0, scale: 0.9 }}
             transition={{ type: "spring", stiffness: 380, damping: 20 }}
             role="status"
           >
-            <span className="font-serif text-xl font-bold leading-tight text-gold-200">{banner.title}</span>
-            <span className="text-xs text-ivory-muted">{banner.detail}</span>
+            {/* Sized to the table, so it stays one line even on a small phone. */}
+            <span className="whitespace-nowrap font-serif text-[clamp(0.95rem,11cqw,1.25rem)] font-bold leading-tight text-gold-200">
+              {banner.title}
+            </span>
+            <span className="text-[11px] leading-snug text-ivory-muted">{banner.detail}</span>
           </motion.div>
         )}
       </AnimatePresence>

@@ -8,7 +8,7 @@ Rules are tested in `tests/rules/` (`npm run test:rules`), using the app's real 
 
 **Accounts**
 - Only signed-in users can read or write anything.
-- `users/{uid}`: only you can write it; only `displayName`, `photoURL` and `createdAt` are allowed; `createdAt` is fixed.
+- `users/{uid}`: only you can write it; only `displayName`, `photoURL`, `createdAt` and the `muted` sound preference (true/false) are allowed; `createdAt` is fixed.
 
 **Joining (private rooms)**
 - Rooms can't be listed or browsed. `codes/{code}` allows `get` but not `list`, so you need the exact 6-character code.

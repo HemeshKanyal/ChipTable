@@ -135,9 +135,11 @@ service cloud.firestore {
     // ------------------------------------------------------------ users
 
     function validProfile(data) {
-      return data.keys().hasOnly(['displayName', 'photoURL', 'createdAt'])
+      return data.keys().hasOnly(['displayName', 'photoURL', 'createdAt', 'muted'])
         && validDisplayName(data.displayName)
-        && validPhoto(data.photoURL);
+        && validPhoto(data.photoURL)
+        // Sound preference, saved per user.
+        && (!('muted' in data) || data.muted is bool);
     }
 
     match /users/{uid} {

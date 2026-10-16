@@ -3,11 +3,14 @@
 import { AnimatePresence, motion } from "framer-motion";
 import { useEffect, useRef, useState } from "react";
 import { useAuth, useSignedInUser } from "@/components/auth/AuthProvider";
+import { useSound } from "@/components/SoundProvider";
 import { Avatar } from "@/components/ui/Avatar";
+import { SoundOffIcon, SoundOnIcon } from "@/components/ui/icons";
 
 export function UserMenu() {
   const user = useSignedInUser();
   const { signOut } = useAuth();
+  const { muted, setMuted } = useSound();
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const name = user.displayName ?? "Player";
@@ -56,6 +59,16 @@ export function UserMenu() {
                 {user.email && <p className="truncate text-xs text-ivory-muted">{user.email}</p>}
               </div>
             </div>
+            <button
+              type="button"
+              role="menuitemcheckbox"
+              aria-checked={!muted}
+              onClick={() => setMuted(!muted)}
+              className="flex w-full items-center gap-2 px-4 py-3 text-left text-sm text-ivory-muted hover:bg-white/5 hover:text-ivory"
+            >
+              {muted ? <SoundOffIcon size={16} /> : <SoundOnIcon size={16} />}
+              Sounds {muted ? "off" : "on"}
+            </button>
             <button
               type="button"
               role="menuitem"

@@ -8,6 +8,8 @@ export interface UserProfile {
   displayName: string;
   photoURL: string | null;
   createdAt: Timestamp;
+  /** Sounds off. Missing = sounds on. */
+  muted?: boolean;
 }
 
 /** `users/{uid}/rooms/{roomId}`: the "My Rooms" index. */

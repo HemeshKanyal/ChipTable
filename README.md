@@ -2,7 +2,7 @@
 
 Digital poker chips for real-life card games. Real cards on the table, play chips on your phone. **Play money only.**
 
-The build spec is in [`poker-chips-spec.md`](./poker-chips-spec.md). This README covers local setup; deploy steps arrive in Phase 7.
+The build spec is in [`poker-chips-spec.md`](./poker-chips-spec.md). This README covers local setup, how to play, and how to deploy.
 
 ## Stack
 
@@ -80,13 +80,60 @@ If something else holds 9099/8080 (say, a second checkout's emulators), start yo
 | `npm run lint` | ESLint |
 | `npm run build` | Production build |
 
-## Using a real Firebase project
+## Deploying
 
-1. Create a project, enable **Authentication → Google**, and create a **Firestore** database.
-2. Add a Web app and copy its config into `.env.local`, then set `NEXT_PUBLIC_USE_FIREBASE_EMULATORS=false`.
-3. Deploy the rules: `npx firebase deploy --only firestore:rules --project <your-project-id>`.
+ChipTable runs on Firebase's free **Spark** plan (Auth + Firestore, no Cloud Functions) and Vercel's free tier.
+
+### 1. Firebase
+
+1. In the [Firebase console](https://console.firebase.google.com), create a project (no Google Analytics needed). Stay on the Spark plan.
+2. **Authentication → Sign-in method → Google**: enable it and pick a support email.
+3. **Firestore Database → Create database**, production mode, in a region near your players.
+4. **Project settings → General → Your apps → Web (</>)**: register an app and keep its config values for step 3.
+5. Deploy the Security Rules (and the empty index file) from this repo:
+   ```bash
+   npx firebase login
+   npx firebase deploy --only firestore --project <your-project-id>
+   ```
+   Re-run this whenever `firestore.rules` changes. No composite indexes are needed.
+
+### 2. Vercel
+
+1. Push the repo to GitHub and **Import** it at [vercel.com/new](https://vercel.com/new). The framework (Next.js) is detected; keep the default build settings.
+2. Add these **Environment Variables** (Production and Preview), from the Firebase web-app config:
+
+   | Variable | Value |
+   | --- | --- |
+   | `NEXT_PUBLIC_USE_FIREBASE_EMULATORS` | `false` |
+   | `NEXT_PUBLIC_FIREBASE_API_KEY` | `apiKey` |
+   | `NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN` | `authDomain` |
+   | `NEXT_PUBLIC_FIREBASE_PROJECT_ID` | `projectId` |
+   | `NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET` | `storageBucket` |
+   | `NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID` | `messagingSenderId` |
+   | `NEXT_PUBLIC_FIREBASE_APP_ID` | `appId` |
+
+3. Deploy. Then in Firebase, **Authentication → Settings → Authorized domains**, add your Vercel domain (e.g. `chiptable.vercel.app`, plus any custom domain). Google sign-in fails with `auth/unauthorized-domain` until you do.
+
+These values are public by design (they ship to every browser); the Security Rules are what protect the data.
+
+### 3. Check it
+
+- Sign in on two phones, create a room, join from the other with the code, and play a hand.
+- **Install it:** on Android Chrome, "Install app" / "Add to Home screen"; on iPhone Safari, Share → "Add to Home Screen". It opens full-screen, in portrait.
+- Open **Invite → Table View** on a laptop or tablet for the big shared screen.
+
+### Running locally against the real project
+
+Copy the same values into `.env.local` with `NEXT_PUBLIC_USE_FIREBASE_EMULATORS=false`, and add `localhost` to the authorized domains (it usually is by default).
 
 See [`SECURITY.md`](./SECURITY.md) for what the rules guarantee and what they can't.
+
+## Around the table
+
+- **Sound and haptics:** chip clacks, a fanfare when a pot is paid, a chime and a buzz when it's your turn, a "boing" with a buzz when you're nudged. Toggle sounds with the speaker icon in the room (or the account menu); the choice is saved to your profile. Phones that don't support vibration (iOS Safari) just get the sound.
+- **Learning helpers:** the **Hands** pill opens a hand-rankings cheat sheet. When you face a bet in guided mode, the action panel shows pot odds: "Call 200 to win 800 → 20% equity needed".
+- **Table View** (`/room/[id]/table`): a big read-only screen with every seat, the pots, the street banner, the recent moves and the stacks, plus the join code. It plays the table sounds but never acts. Any room member can open it.
+- **Motion:** with "reduce motion" on in the OS, chip flights, sparkles, shakes and rolling numbers are switched off.
 
 ## Project layout
 
@@ -103,6 +150,9 @@ lib/hand/            pure glue between the engine and the hand doc / UI (banners
 lib/stats/           pure leaderboard, session and stack-timeline maths over a season's hands
 lib/firebase/rebuys.ts, seasons.ts  rebuy requests; reset vote, season archive and reset
 components/history/  the History screen (/room/[id]/history)
+components/table/    the Table View (/room/[id]/table)
+lib/sound.ts         Web Audio sound effects (no audio files) and vibration
+app/manifest.ts, icon.tsx, apple-icon.tsx  PWA manifest and generated icons (lib/brand/chipArt.tsx)
 lib/firebase/guided.ts  guided hands: deal, act, per-pot votes, settle, nudges (Firestore transactions)
 firestore.rules      Security Rules
 ```
@@ -134,4 +184,4 @@ Tests: `lib/engine/*.test.ts`, including heads-up, multi-way all-in side pots, a
 - [x] **4. Engine**: pure No-Limit Hold'em betting engine in `lib/engine/` with Vitest tests (blinds incl. heads-up, button rotation, turn order, min-raise, incomplete all-ins, side pots, settlement)
 - [x] **5. Guided mode UI**: deal with auto blinds, turn-enforced Fold/Check/Call/Bet/Raise (slider + min/½/¾/pot/all-in), street and run-out banners, live side pots, a vote per pot, instant win on fold-out, host fold-for-absent, nudges
 - [x] **6. Rebuys, reset vote, history, leaderboard, seasons**: host-approved rebuys, 30s room-reset vote that archives the season, per-season leaderboard, sessions with stack timelines, hand review with full action log
-- [ ] 7. Polish
+- [x] **7. Polish**: synthesised sounds + haptics with a per-user mute, Table View, hand-rankings cheat sheet, pot odds, installable PWA (manifest, generated icons, portrait), reduced-motion support, rules tests for every collection, deploy guide

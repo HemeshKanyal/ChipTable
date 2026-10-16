@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { deal, play } from "../engine/testkit";
-import { describeAction, guidedFields, NUDGE_PRESETS, raisePresets, stackInHand, streetBanner } from "./guided";
+import { describeAction, guidedFields, NUDGE_PRESETS, potOdds, raisePresets, stackInHand, streetBanner } from "./guided";
 
 // Button seat 0 (A), so B posts the SB (5), C the BB (10), and A acts first.
 const three = () => deal({ A: [0, 1000], B: [1, 1000], C: [2, 1000] }, 0);
@@ -96,6 +96,28 @@ describe("raisePresets", () => {
 
   it("is empty when it isn't your turn or you can't raise", () => {
     expect(raisePresets(three(), "B")).toEqual([]);
+  });
+});
+
+describe("potOdds", () => {
+  it("compares the call with the whole pot", () => {
+    // A faces 10 into 15: needs 10 / 25 = 40%.
+    expect(potOdds(three(), "A")).toEqual({ call: 10, win: 15, equity: 0.4 });
+    // Spec example: call 200 to win 800 → 20%.
+    const s = play(deal({ A: [0, 5000], B: [1, 5000], C: [2, 5000] }, 0), ["A", 400], ["B", "fold"]);
+    // C (BB, 10 in) faces 390 more into 415.
+    expect(potOdds(s, "C")).toEqual({ call: 390, win: 415, equity: 390 / 805 });
+  });
+
+  it("caps what a short all-in call can win", () => {
+    const s = play(deal({ A: [0, 1000], B: [1, 1000], C: [2, 60] }, 0), ["A", 500], ["B", "call"]);
+    // C has 50 behind (10 posted): all-in for 60, they can win 60 each from A and B, plus their own 10.
+    expect(potOdds(s, "C")).toMatchObject({ call: 50, win: 130 });
+  });
+
+  it("is null with nothing to call", () => {
+    expect(potOdds(play(three(), ["A", "call"], ["B", "call"]), "C")).toBeNull();
+    expect(potOdds(three(), "B")).toBeNull();
   });
 });
 

@@ -26,6 +26,27 @@ export const HistoryIcon = (p: IconProps) => (
   </Svg>
 );
 
+export const SoundOnIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M11 5 6 9H2v6h4l5 4z" />
+    <path d="M15.5 8.5a5 5 0 0 1 0 7M19 5a10 10 0 0 1 0 14" />
+  </Svg>
+);
+
+export const SoundOffIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M11 5 6 9H2v6h4l5 4z" />
+    <path d="m22 9-6 6M16 9l6 6" />
+  </Svg>
+);
+
+export const CardsIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <rect x="3" y="5" width="11" height="15" rx="2" />
+    <path d="M17 5.5 20.4 7a2 2 0 0 1 1 2.6l-4.2 9.8" />
+  </Svg>
+);
+
 export const ArrowLeftIcon = (p: IconProps) => (
   <Svg {...p}>
     <path d="M19 12H5M12 19l-7-7 7-7" />

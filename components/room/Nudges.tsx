@@ -4,6 +4,7 @@ import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { useCallback, useState } from "react";
 import { BottomSheet } from "@/components/ui/BottomSheet";
 import { NUDGE_PRESETS } from "@/lib/hand/guided";
+import { vibrate } from "@/lib/sound";
 
 interface NudgeSheetProps {
   open: boolean;
@@ -51,11 +52,7 @@ export function useNudgeToasts() {
     const id = Date.now() + Math.random();
     setShown((s) => [...s.slice(-1), { id, from, text: NUDGE_PRESETS[preset] ?? "👋 Your turn" }]);
     setTimeout(() => setShown((s) => s.filter((n) => n.id !== id)), 4_000);
-    try {
-      navigator.vibrate?.([120, 60, 120, 60, 200]);
-    } catch {
-      // Not supported (iOS Safari): the toast is enough.
-    }
+    vibrate([120, 60, 120, 60, 200]);
   }, []);
   return { shown, show };
 }

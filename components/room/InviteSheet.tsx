@@ -13,6 +13,8 @@ interface InviteSheetProps {
   roomName: string;
   code: string;
   hasPassword: boolean;
+  /** Link to this room's Table View. */
+  tableViewHref?: string;
 }
 
 async function copyText(text: string): Promise<boolean> {
@@ -33,7 +35,7 @@ async function copyText(text: string): Promise<boolean> {
   }
 }
 
-export function InviteSheet({ open, onClose, roomName, code, hasPassword }: InviteSheetProps) {
+export function InviteSheet({ open, onClose, roomName, code, hasPassword, tableViewHref }: InviteSheetProps) {
   const toast = useToast();
   const [qr, setQr] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
@@ -108,6 +110,20 @@ export function InviteSheet({ open, onClose, roomName, code, hasPassword }: Invi
           <p className="flex items-center gap-1.5 text-xs text-ivory-muted">
             <LockIcon size={12} /> This room has a password. Tell people in person.
           </p>
+        )}
+
+        {tableViewHref && (
+          <a
+            href={tableViewHref}
+            target="_blank"
+            rel="noopener"
+            className="mt-1 w-full rounded-xl border gold-hairline px-4 py-3 text-left text-sm hover:bg-white/5"
+          >
+            <span className="font-semibold text-gold-200">Open the Table View ↗</span>
+            <span className="block text-xs text-ivory-muted">
+              A big read-only screen for a laptop or tablet in the middle of the table.
+            </span>
+          </a>
         )}
       </div>
     </BottomSheet>

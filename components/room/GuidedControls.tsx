@@ -5,7 +5,7 @@ import { useState } from "react";
 import { Button } from "@/components/ui/Button";
 import { formatChips } from "@/lib/chips";
 import { legalActions, potTotal, type HandState, type PlayerAction } from "@/lib/engine";
-import { raisePresets } from "@/lib/hand/guided";
+import { potOdds, raisePresets } from "@/lib/hand/guided";
 
 interface GuidedControlsProps {
   state: HandState;
@@ -22,6 +22,7 @@ export function GuidedControls({ state, uid, busy, onAct }: GuidedControlsProps)
   const legal = legalActions(state, uid);
   const me = state.players.find((p) => p.uid === uid)!;
   const presets = raisePresets(state, uid);
+  const odds = potOdds(state, uid);
   const [raiseTo, setRaiseTo] = useState(() => legal.raise?.min ?? 0);
   const [confirmFold, setConfirmFold] = useState(false);
 
@@ -62,6 +63,14 @@ export function GuidedControls({ state, uid, busy, onAct }: GuidedControlsProps)
           )}
         </div>
       </div>
+
+      {odds && (
+        <p className="-mt-1 rounded-lg bg-felt-950/50 px-3 py-1.5 text-xs text-ivory-muted tabular-nums">
+          Call <span className="font-semibold text-ivory">{formatChips(odds.call)}</span> to win{" "}
+          <span className="font-semibold text-ivory">{formatChips(odds.win)}</span> →{" "}
+          <span className="font-semibold text-gold-200">{Math.round(odds.equity * 100)}%</span> equity needed
+        </p>
+      )}
 
       {legal.raise && legal.raise.min < legal.raise.max && (
         <div className="flex flex-col gap-2">

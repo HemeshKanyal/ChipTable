@@ -110,6 +110,25 @@ export function raisePresets(state: HandState, uid: string): RaisePreset[] {
   return [{ label: "Min", to: range.min }, ...middle, allIn];
 }
 
+export interface PotOdds {
+  call: number;
+  /** Everything you'd take if you call and win: the pot, capped at what your call covers. */
+  win: number;
+  /** call / (win + call): how often you need to win for the call to break even. */
+  equity: number;
+}
+
+/** "Call 200 to win 800 → 20% equity needed". Null when you aren't facing a bet. */
+export function potOdds(state: HandState, uid: string): PotOdds | null {
+  const call = legalActions(state, uid).call;
+  const me = state.players.find((p) => p.uid === uid);
+  if (call === null || !me) return null;
+  // A short call can only win up to its own level from each opponent.
+  const myTotal = me.totalIn + call;
+  const win = state.players.reduce((n, p) => n + (p === me ? p.totalIn : Math.min(p.totalIn, myTotal)), 0);
+  return { call, win, equity: call / (win + call) };
+}
+
 // ------------------------------------------------------------------ nudges
 
 /** Playful prods for whoever's taking their time. Index is stored, so only append. */
